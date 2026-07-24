@@ -4,7 +4,7 @@ metadata:
   name: orchestrator-api
   labels:
     app: orchestrator-api
-    app.kubernetes.io/part-of: maestro
+    app.kubernetes.io/part-of: modelect
 spec:
   replicas: 1
   selector:

@@ -1,4 +1,4 @@
-"""Maestro — Multi-LLM Orchestrator (demo build).
+"""Modelect — Multi-LLM Orchestrator (demo build).
 
 Single FastAPI service combining the control plane (catalog,
 recommendations, analytics) and a demo gateway (OpenAI-compatible
@@ -22,7 +22,7 @@ from . import analytics
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, similar_models
 
-app = FastAPI(title="Maestro — Multi-LLM Orchestrator", version="0.1.0-demo")
+app = FastAPI(title="Modelect — Multi-LLM Orchestrator", version="0.1.0-demo")
 
 app.add_middleware(
     CORSMiddleware,
@@ -183,7 +183,7 @@ async def chat_completions(req: ChatCompletionRequest):
                          "message": {"role": "assistant", "content": sim["text"]}}],
             "usage": {"prompt_tokens": sim["tokens_in"], "completion_tokens": sim["tokens_out"],
                       "total_tokens": sim["tokens_in"] + sim["tokens_out"]},
-            "maestro": {"routed": req.model == "auto", "latency_ms": sim["latency_ms"],
+            "modelect": {"routed": req.model == "auto", "latency_ms": sim["latency_ms"],
                         "cost_usd": sim["cost"]},
         }
 

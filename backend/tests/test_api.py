@@ -51,5 +51,5 @@ def test_openai_compatible_gateway_auto_routing():
         "messages": [{"role": "user", "content": "hello"}],
     }).json()
     assert r["object"] == "chat.completion"
-    assert r["maestro"]["routed"] is True
+    assert r["modelect"]["routed"] is True
     assert r["usage"]["total_tokens"] > 0

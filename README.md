@@ -1,4 +1,4 @@
-# Maestro — Multi-LLM Orchestrator (demo build)
+# Modelect — Multi-LLM Orchestrator (demo build)
 
 A demo of a multi-LLM orchestration platform: one unified, OpenAI-compatible
 API in front of many models, plus a **model intelligence layer** — a living

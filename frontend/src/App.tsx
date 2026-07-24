@@ -19,7 +19,7 @@ export default function App() {
       <aside className="w-56 shrink-0 border-r border-edge bg-surface flex flex-col">
         <div className="px-5 py-5 border-b border-edge">
           <div className="text-lg font-semibold tracking-tight">
-            Maestro<span className="text-s1">.</span>
+            Modelect<span className="text-s1">.</span>
           </div>
           <div className="text-[11px] text-muted mt-0.5">
             Multi-LLM Orchestrator
