@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-api
+  labels:
+    app: orchestrator-api
+    app.kubernetes.io/part-of: maestro
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-api
+  template:
+    metadata:
+      labels:
+        app: orchestrator-api
+    spec:
+      containers:
+        - name: api
+          image: image-registry.openshift-image-registry.svc:5000/llm-orchestrator/orchestrator-api:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-api
+  labels:
+    app: orchestrator-api
+spec:
+  selector:
+    app: orchestrator-api
+  ports:
+    - port: 8000
+      targetPort: 8000

@@ -1,0 +1,11 @@
+services:
+  orchestrator-api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+  orchestrator-ui:
+    build: ./frontend
+    ports:
+      - "8080:8080"
+    depends_on:
+      - orchestrator-api

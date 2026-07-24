@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-ui
+  labels:
+    app: orchestrator-ui
+    app.kubernetes.io/part-of: maestro
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-ui
+  template:
+    metadata:
+      labels:
+        app: orchestrator-ui
+    spec:
+      containers:
+        - name: ui
+          image: image-registry.openshift-image-registry.svc:5000/llm-orchestrator/orchestrator-ui:latest
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-ui
+  labels:
+    app: orchestrator-ui
+spec:
+  selector:
+    app: orchestrator-ui
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: orchestrator-ui
+  labels:
+    app: orchestrator-ui
+spec:
+  to:
+    kind: Service
+    name: orchestrator-ui
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
