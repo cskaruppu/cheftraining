@@ -18,6 +18,7 @@ function (`_simulate_completion` in `backend/app/main.py`).
 | Control plane + demo gateway | Python 3.12 · FastAPI | `backend/` |
 | Dashboard (5 pages) | React 18 · TypeScript · Vite · Tailwind · Recharts | `frontend/` |
 | OpenShift manifests | Deployments, Services, Route | `openshift/` |
+| Build/deploy scripts | quay.io push + `oc` deploy | `scripts/` |
 | Local run | docker compose | `docker-compose.yml` |
 
 Dashboard pages: **Dashboard** (spend/latency/cache KPIs and charts),
@@ -35,25 +36,40 @@ API highlights:
 - `POST /v1/chat/completions` — OpenAI-compatible; `"model": "auto"` routes
   via the recommender; supports `"stream": true` (SSE)
 
-## Deploy to OpenShift
+## Deploy to OpenShift (via quay.io — recommended)
 
-Requires an OpenShift 4.x cluster and the `oc` CLI, logged in.
+Requires podman or docker locally, a quay.io account, and the `oc` CLI
+logged in to your cluster.
 
 ```bash
-# 1. Project (the manifests reference the 'llm-orchestrator' namespace)
-oc new-project llm-orchestrator
+# 1. Build both images and push to quay.io (tag defaults to the git SHA)
+podman login quay.io                      # once
+./scripts/build-and-push.sh <your-quay-user> v0.1.0
 
-# 2. Build both images on-cluster from this repo's Dockerfiles
+# 2. Deploy to the cluster (creates the project, applies openshift/,
+#    points the deployments at your quay images, waits for rollout,
+#    prints the dashboard URL)
+./scripts/deploy.sh <your-quay-user> v0.1.0
+
+# Cleanup when done
+./scripts/undeploy.sh                     # or --delete-project
+```
+
+Private quay repos: export `QUAY_USERNAME` and `QUAY_PASSWORD` before
+running the scripts — `build-and-push.sh` uses them to log in and
+`deploy.sh` creates a pull secret in the cluster. New quay.io
+repositories are private by default; either do that or flip the repos
+to public in the quay.io UI.
+
+### Alternative: build on-cluster (no quay.io needed)
+
+```bash
+oc new-project llm-orchestrator
 oc new-build --name orchestrator-api --binary --strategy docker
 oc start-build orchestrator-api --from-dir backend --follow
-
 oc new-build --name orchestrator-ui --binary --strategy docker
 oc start-build orchestrator-ui --from-dir frontend --follow
-
-# 3. Deploy + expose
 oc apply -f openshift/
-
-# 4. Open the dashboard
 echo "https://$(oc get route orchestrator-ui -o jsonpath='{.spec.host}')"
 ```
 
