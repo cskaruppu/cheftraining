@@ -45,6 +45,27 @@ def test_playground_and_analytics():
     assert len(a["daily"]) >= 14
 
 
+def test_serving_profiles():
+    r = client.get("/api/models/llama-4-maverick/profiles").json()
+    assert r["self_hostable"] is True
+    assert len(r["profiles"]) >= 2
+    assert any(p["recommended"] for p in r["profiles"])
+    closed = client.get("/api/models/gpt-5.1/profiles").json()
+    assert closed["profiles"] == []
+
+
+def test_deployment_lifecycle():
+    r = client.post("/api/deployments", json={
+        "model_id": "phi-4", "profile_id": "balanced", "name": "phi4-prod"}).json()
+    assert r["api_key"].startswith("mk-")
+    assert r["status"] in {"scheduling", "pulling_weights", "warming_up", "ready"}
+    listed = client.get("/api/deployments").json()["deployments"]
+    assert any(d["id"] == r["id"] for d in listed)
+    assert client.post("/api/deployments", json={
+        "model_id": "gpt-5.1", "profile_id": "balanced", "name": "x"}).status_code == 400
+    assert client.delete(f"/api/deployments/{r['id']}").json()["deleted"] == r["id"]
+
+
 def test_openai_compatible_gateway_auto_routing():
     r = client.post("/v1/chat/completions", json={
         "model": "auto",

@@ -24,13 +24,21 @@ function (`_simulate_completion` in `backend/app/main.py`).
 Dashboard pages: **Dashboard** (spend/latency/cache KPIs and charts),
 **Model Catalog** (19 models, searchable/filterable), **Recommend**
 (requirement → scored ranking with reasons + "you chose X, we suggest Y"),
-**Compare** (radar + price-vs-quality scatter + spec matrix), **Playground**
-(one prompt across up to 3 models side by side).
+**Deploy** (VM-style self-service provisioning: pick an open-weights
+model + serving profile with GPU/quantization/cost sizing → live
+provisioning progress → endpoint + API key; simulated in the demo,
+production creates vLLM/KServe services), **Compare** (radar +
+price-vs-quality scatter + spec matrix), **Playground** (one prompt
+across up to 3 models side by side).
+
+Product direction, positioning and roadmap: see [`docs/VISION.md`](docs/VISION.md).
 
 API highlights:
 
 - `GET /api/models` — model registry (seed data; production: auto-synced)
 - `POST /api/recommend` — weighted multi-criteria scoring with full breakdown
+- `GET /api/models/{id}/profiles`, `POST/GET/DELETE /api/deployments` —
+  serving profiles and simulated VM-style provisioning
 - `POST /api/compare`, `GET /api/models/{id}/similar`
 - `GET /api/analytics/summary` — KPIs, daily spend, per-model usage
 - `POST /v1/chat/completions` — OpenAI-compatible; `"model": "auto"` routes

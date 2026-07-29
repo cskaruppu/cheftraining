@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics
+from . import analytics, deployments
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, similar_models
 
@@ -137,6 +137,42 @@ def playground(req: PlaygroundRequest):
     if missing:
         raise HTTPException(404, f"unknown model(s): {missing}")
     return {"results": [_simulate_completion(MODELS_BY_ID[i], req.prompt) for i in req.model_ids[:3]]}
+
+
+# --------------------------- deployments ------------------------------
+
+class DeploymentRequest(BaseModel):
+    model_id: str
+    profile_id: str
+    name: str = ""
+
+
+@app.get("/api/models/{model_id}/profiles")
+def get_profiles(model_id: str):
+    if model_id not in MODELS_BY_ID:
+        raise HTTPException(404, "unknown model")
+    return {"profiles": deployments.serving_profiles(model_id),
+            "self_hostable": MODELS_BY_ID[model_id]["self_hostable"]}
+
+
+@app.post("/api/deployments")
+def create_deployment(req: DeploymentRequest):
+    try:
+        return deployments.create(req.model_id, req.profile_id, req.name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/deployments")
+def list_deployments():
+    return {"deployments": deployments.list_all()}
+
+
+@app.delete("/api/deployments/{dep_id}")
+def delete_deployment(dep_id: str):
+    if not deployments.delete(dep_id):
+        raise HTTPException(404, "unknown deployment")
+    return {"deleted": dep_id}
 
 
 # --------------------------- analytics --------------------------------
