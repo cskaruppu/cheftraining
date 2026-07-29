@@ -52,12 +52,20 @@ Requires podman or docker locally, a quay.io account, and a logged-in
 `oc` (OpenShift) or configured `kubectl` (Kubernetes).
 
 **Single-file script** — build + push + deploy + URL in one command,
-with all manifests embedded (no other deploy files needed):
+with all manifests embedded (no other deploy files needed). It even
+clones this repo itself when run outside a checkout, so the script is
+the only file you need:
 
 ```bash
 podman login quay.io                      # once
 
-# OpenShift — auto-detected:
+# Option A: from anywhere — grab just the script; it clones the source
+curl -fsSLO https://raw.githubusercontent.com/cskaruppu/cheftraining/claude/multi-llm-orchestrator-research-eb6w9j/modelect-deploy.sh
+chmod +x modelect-deploy.sh
+./modelect-deploy.sh <your-quay-user> v0.2.0
+# (private repo? set REPO_URL to an authenticated URL or run from a clone)
+
+# Option B: from a clone of this repo — OpenShift auto-detected:
 ./modelect-deploy.sh <your-quay-user> v0.2.0
 
 # Vanilla Kubernetes (EKS/AKS/GKE/…):

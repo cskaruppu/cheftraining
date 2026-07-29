@@ -9,12 +9,21 @@
 #    ./modelect-deploy.sh <quay-namespace> [tag]          deploy (default)
 #    ./modelect-deploy.sh <quay-namespace> [tag] undeploy remove everything
 #
+#  The script is fully standalone: if it is NOT running inside a clone of
+#  the repo, it clones it first (REPO_URL/REPO_BRANCH below) — so you can
+#  download just this one file and run it from anywhere.
+#
 #  Environment (all optional):
 #    NAMESPACE       target project/namespace     (default: llm-orchestrator)
 #    PLATFORM        openshift | kubernetes       (default: auto-detect)
 #    INGRESS_HOST    hostname — required for kubernetes deploys
 #    SKIP_BUILD=1    skip build & push (redeploy existing images)
 #    DRY_RUN=1       print the manifests instead of applying them
+#    REPO_URL        source repo to clone when not run from a checkout
+#                    (default: https://github.com/cskaruppu/cheftraining.git)
+#    REPO_BRANCH     branch to check out
+#                    (default: claude/multi-llm-orchestrator-research-eb6w9j)
+#    WORKDIR         where to clone (default: ./modelect-src)
 #    QUAY_USERNAME / QUAY_PASSWORD
 #                    registry login for push + pull secret for private repos
 #
@@ -184,6 +193,24 @@ fi
 
 # --------------------------------------------------------------- build & push
 if [[ "${SKIP_BUILD:-0}" != "1" && "${DRY_RUN:-0}" != "1" ]]; then
+  # Standalone mode: no source alongside the script? Clone the repo first.
+  if [[ ! -d "$REPO_ROOT/backend" || ! -d "$REPO_ROOT/frontend" ]]; then
+    REPO_URL="${REPO_URL:-https://github.com/cskaruppu/cheftraining.git}"
+    REPO_BRANCH="${REPO_BRANCH:-claude/multi-llm-orchestrator-research-eb6w9j}"
+    WORKDIR="${WORKDIR:-$PWD/modelect-src}"
+    command -v git >/dev/null 2>&1 || { echo "ERROR: git is required to fetch the source" >&2; exit 1; }
+    if [[ -d "$WORKDIR/.git" ]]; then
+      log "Updating source in $WORKDIR ($REPO_BRANCH)"
+      git -C "$WORKDIR" fetch origin "$REPO_BRANCH"
+      git -C "$WORKDIR" checkout "$REPO_BRANCH"
+      git -C "$WORKDIR" pull --ff-only origin "$REPO_BRANCH"
+    else
+      log "Cloning $REPO_URL ($REPO_BRANCH) into $WORKDIR"
+      git clone --branch "$REPO_BRANCH" --single-branch "$REPO_URL" "$WORKDIR"
+    fi
+    REPO_ROOT="$WORKDIR"
+  fi
+
   if command -v podman >/dev/null 2>&1; then ENGINE=podman
   elif command -v docker >/dev/null 2>&1; then ENGINE=docker
   else echo "ERROR: neither podman nor docker found" >&2; exit 1; fi
