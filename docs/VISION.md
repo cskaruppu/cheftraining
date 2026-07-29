@@ -85,6 +85,32 @@ governance/optimization tier is the proven route in this space.
 | 3 | Multi-tenancy: API keys, quotas, metering, per-team cost dashboards; data-sensitivity routing policies | |
 | 4 | Optimization loop with approval gates, trust graduation, verified savings; agent-aware budgets & policies; Go data-plane gateway, ClickHouse analytics | |
 
+## CNCF-standard by design
+
+Enterprise buyers screen for cloud-native standards; Modelect's rule is
+**assemble CNCF plumbing, build only the brain**. Custom engineering is
+reserved for the differentiators (recommendation & sizing engine, hybrid
+catalog, transparent scoring, optimization loop, portal).
+
+| Layer | Standard component | Notes |
+|---|---|---|
+| Data-plane gateway | **Envoy / Envoy AI Gateway** (graduated) | LLM-aware routing, token rate limits; our policies run on it. Track Gateway API Inference Extension |
+| Model serving | **KServe** + **Knative** (incubating) + vLLM | Deploy page = thin control plane creating InferenceServices; scale-to-zero |
+| GPU scaling/scheduling | **KEDA** (graduated), **Volcano** (incubating), **HAMi** (sandbox) | Autoscaling, gang scheduling, GPU sharing |
+| Policy ("Govern" pillar) | **OPA** (graduated) / **Kyverno** (incubating) | Data-sensitivity routing, budgets, quotas as policy-as-code |
+| Identity & tenancy | **Keycloak** (incubating) | SSO/OIDC/SAML, RBAC — never custom auth |
+| Observability | **OpenTelemetry** (+ GenAI semantic conventions), **Prometheus**, **Jaeger** (all graduated) | Customers plug our telemetry into their existing stack |
+| Eventing & metering | **NATS** (incubating), **CloudEvents** (graduated), **Strimzi** for Kafka shops | Async usage pipeline feeding analytics/billing |
+| Model/image distribution | **Harbor** (graduated) + **Dragonfly** (incubating) | Weights as OCI artifacts; P2P pulls kill cold-starts |
+| Delivery | **Helm**, **Argo CD** (graduated; OpenShift GitOps) | "helm install modelect"; config as Git |
+| TLS & secrets | **cert-manager** (graduated), External Secrets Operator | Provider keys synced from customer vaults |
+| Mesh (multi-tenant phase) | **Istio** (graduated) | mTLS between tenant workloads and endpoints |
+
+Cautions: Grafana is AGPL — don't embed it in the product UI (we ship our
+own charts); HashiCorp Vault is no longer OSS — prefer External Secrets
+Operator / OpenBao. Ambition: CNCF membership, a CNCF Landscape listing,
+and alignment with the Kubernetes AI Conformance program as it matures.
+
 ## Non-goals (for focus)
 
 Building our own serving engine (integrate vLLM/KServe/NIM instead);
