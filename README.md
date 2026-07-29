@@ -51,14 +51,28 @@ API highlights:
 Requires podman or docker locally, a quay.io account, and a logged-in
 `oc` (OpenShift) or configured `kubectl` (Kubernetes).
 
+**Single-file script** — build + push + deploy + URL in one command,
+with all manifests embedded (no other deploy files needed):
+
 ```bash
 podman login quay.io                      # once
 
 # OpenShift — auto-detected:
-./scripts/one-shot-deploy.sh <your-quay-user> v0.2.0
+./modelect-deploy.sh <your-quay-user> v0.2.0
 
 # Vanilla Kubernetes (EKS/AKS/GKE/…):
-INGRESS_HOST=modelect.example.com ./scripts/one-shot-deploy.sh <your-quay-user> v0.2.0
+INGRESS_HOST=modelect.example.com ./modelect-deploy.sh <your-quay-user> v0.2.0
+
+# Redeploy without rebuilding / remove everything / preview manifests:
+SKIP_BUILD=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
+./modelect-deploy.sh <your-quay-user> v0.2.0 undeploy
+DRY_RUN=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
+```
+
+Equivalent modular flow (uses Helm when installed, `bundle/` otherwise):
+
+```bash
+./scripts/one-shot-deploy.sh <your-quay-user> v0.2.0
 ```
 
 One command: builds both images, pushes to quay.io, deploys (Helm chart
