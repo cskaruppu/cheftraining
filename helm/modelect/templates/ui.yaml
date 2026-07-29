@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-ui
+  labels:
+    app: orchestrator-ui
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.ui.replicas }}
+  selector:
+    matchLabels:
+      app: orchestrator-ui
+  template:
+    metadata:
+      labels:
+        app: orchestrator-ui
+        {{- include "modelect.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ui
+          image: {{ include "modelect.uiImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+          resources:
+            {{- toYaml .Values.ui.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-ui
+  labels:
+    app: orchestrator-ui
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: orchestrator-ui
+  ports:
+    - port: 8080
+      targetPort: 8080

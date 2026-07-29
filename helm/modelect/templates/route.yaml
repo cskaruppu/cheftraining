@@ -1,0 +1,18 @@
+{{- if eq .Values.ingress.type "route" }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: orchestrator-ui
+  labels:
+    app: orchestrator-ui
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    name: orchestrator-ui
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

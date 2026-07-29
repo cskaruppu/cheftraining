@@ -1,0 +1,88 @@
+# Modelect all-in-one bundle — vanilla Kubernetes variant (Ingress).
+# Placeholders __IMAGE_NS__ / __IMAGE_TAG__ / __INGRESS_HOST__ are filled
+# by scripts/one-shot-deploy.sh (or replace manually and `kubectl apply -f`).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-api
+  labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: orchestrator-api}
+  template:
+    metadata:
+      labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
+    spec:
+      containers:
+        - name: api
+          image: quay.io/__IMAGE_NS__/modelect-api:__IMAGE_TAG__
+          ports: [{containerPort: 8000}]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-api
+  labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
+spec:
+  selector: {app: orchestrator-api}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-ui
+  labels: {app: orchestrator-ui, app.kubernetes.io/part-of: modelect}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: orchestrator-ui}
+  template:
+    metadata:
+      labels: {app: orchestrator-ui, app.kubernetes.io/part-of: modelect}
+    spec:
+      containers:
+        - name: ui
+          image: quay.io/__IMAGE_NS__/modelect-ui:__IMAGE_TAG__
+          ports: [{containerPort: 8080}]
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-ui
+  labels: {app: orchestrator-ui, app.kubernetes.io/part-of: modelect}
+spec:
+  selector: {app: orchestrator-ui}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orchestrator-ui
+  labels: {app: orchestrator-ui, app.kubernetes.io/part-of: modelect}
+spec:
+  rules:
+    - host: __INGRESS_HOST__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orchestrator-ui
+                port: {number: 8080}

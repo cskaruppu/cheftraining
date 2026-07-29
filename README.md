@@ -17,8 +17,10 @@ function (`_simulate_completion` in `backend/app/main.py`).
 |---|---|---|
 | Control plane + demo gateway | Python 3.12 · FastAPI | `backend/` |
 | Dashboard (5 pages) | React 18 · TypeScript · Vite · Tailwind · Recharts | `frontend/` |
+| Helm chart (OpenShift + Kubernetes) | `ingress.type: route \| ingress \| none` | `helm/modelect/` |
+| One-shot bundles (no Helm needed) | pre-rendered all-in-one YAML | `bundle/` |
 | OpenShift manifests | Deployments, Services, Route | `openshift/` |
-| Build/deploy scripts | quay.io push + `oc` deploy | `scripts/` |
+| Build/deploy scripts | quay.io push + one-shot deploy | `scripts/` |
 | Local run | docker compose | `docker-compose.yml` |
 
 Dashboard pages: **Dashboard** (spend/latency/cache KPIs and charts),
@@ -44,23 +46,40 @@ API highlights:
 - `POST /v1/chat/completions` — OpenAI-compatible; `"model": "auto"` routes
   via the recommender; supports `"stream": true` (SSE)
 
-## Deploy to OpenShift (via quay.io — recommended)
+## One-shot deploy (OpenShift or Kubernetes — recommended)
 
-Requires podman or docker locally, a quay.io account, and the `oc` CLI
-logged in to your cluster.
+Requires podman or docker locally, a quay.io account, and a logged-in
+`oc` (OpenShift) or configured `kubectl` (Kubernetes).
 
 ```bash
-# 1. Build both images and push to quay.io (tag defaults to the git SHA)
 podman login quay.io                      # once
-./scripts/build-and-push.sh <your-quay-user> v0.1.0
 
-# 2. Deploy to the cluster (creates the project, applies openshift/,
-#    points the deployments at your quay images, waits for rollout,
-#    prints the dashboard URL)
-./scripts/deploy.sh <your-quay-user> v0.1.0
+# OpenShift — auto-detected:
+./scripts/one-shot-deploy.sh <your-quay-user> v0.2.0
 
-# Cleanup when done
-./scripts/undeploy.sh                     # or --delete-project
+# Vanilla Kubernetes (EKS/AKS/GKE/…):
+INGRESS_HOST=modelect.example.com ./scripts/one-shot-deploy.sh <your-quay-user> v0.2.0
+```
+
+One command: builds both images, pushes to quay.io, deploys (Helm chart
+if `helm` is installed, pre-rendered `bundle/` manifests otherwise),
+waits for rollout, prints the URL. `SKIP_BUILD=1` redeploys without
+rebuilding; `NAMESPACE=...` overrides the target namespace.
+
+Helm directly, if you prefer:
+
+```bash
+helm upgrade --install modelect helm/modelect -n llm-orchestrator \
+  --create-namespace --set image.namespace=<your-quay-user> \
+  --set image.tag=v0.2.0 --set ingress.type=route   # or ingress + ingress.host
+```
+
+### Step-by-step alternative (OpenShift)
+
+```bash
+./scripts/build-and-push.sh <your-quay-user> v0.2.0
+./scripts/deploy.sh <your-quay-user> v0.2.0
+./scripts/undeploy.sh                     # cleanup; or --delete-project
 ```
 
 Private quay repos: export `QUAY_USERNAME` and `QUAY_PASSWORD` before

@@ -1,0 +1,34 @@
+# Modelect Helm values.
+# Minimum you must set: image.namespace (your quay.io user/org).
+
+image:
+  registry: quay.io
+  namespace: ""            # REQUIRED, e.g. "cskaruppu"
+  apiRepository: modelect-api
+  uiRepository: modelect-ui
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# e.g. [{name: quay-pull}] if your quay repos are private
+imagePullSecrets: []
+
+api:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+
+ui:
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+
+ingress:
+  # "route"   -> OpenShift Route (edge TLS)
+  # "ingress" -> Kubernetes Ingress (set host; optionally className/tlsSecret)
+  # "none"    -> no external exposure (port-forward or your own gateway)
+  type: route
+  host: ""                 # required when type=ingress
+  className: ""            # e.g. "nginx"; empty uses the cluster default
+  tlsSecret: ""            # existing TLS secret for the host (optional)

@@ -1,0 +1,18 @@
+Modelect is installing.
+
+{{- if eq .Values.ingress.type "route" }}
+
+Get the dashboard URL (OpenShift):
+  echo "https://$(oc -n {{ .Release.Namespace }} get route orchestrator-ui -o jsonpath='{.spec.host}')"
+{{- else if eq .Values.ingress.type "ingress" }}
+
+Dashboard URL: http{{ if .Values.ingress.tlsSecret }}s{{ end }}://{{ .Values.ingress.host }}
+(ensure DNS for {{ .Values.ingress.host }} points at your ingress controller)
+{{- else }}
+
+No external exposure configured (ingress.type=none). Port-forward:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/orchestrator-ui 8080:8080
+then open http://localhost:8080
+{{- end }}
+
+Gateway (OpenAI-compatible): <dashboard-url>/v1/chat/completions

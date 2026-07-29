@@ -1,0 +1,30 @@
+{{- if eq .Values.ingress.type "ingress" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: orchestrator-ui
+  labels:
+    app: orchestrator-ui
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tlsSecret }}
+  tls:
+    - hosts:
+        - {{ required "ingress.host is required when ingress.type=ingress" .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tlsSecret }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host is required when ingress.type=ingress" .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orchestrator-ui
+                port:
+                  number: 8080
+{{- end }}

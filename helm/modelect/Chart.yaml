@@ -1,0 +1,11 @@
+apiVersion: v2
+name: modelect
+description: Modelect — Multi-LLM Orchestrator (control plane, gateway and dashboard)
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
+keywords:
+  - llm
+  - ai
+  - orchestrator
+  - gateway
