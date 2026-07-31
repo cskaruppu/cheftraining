@@ -59,11 +59,48 @@ def test_deployment_lifecycle():
         "model_id": "phi-4", "profile_id": "balanced", "name": "phi4-prod"}).json()
     assert r["api_key"].startswith("mk-")
     assert r["status"] in {"scheduling", "pulling_weights", "warming_up", "ready"}
+    assert r["cluster_id"], "auto-placement should assign a cluster"
     listed = client.get("/api/deployments").json()["deployments"]
     assert any(d["id"] == r["id"] for d in listed)
     assert client.post("/api/deployments", json={
         "model_id": "gpt-5.1", "profile_id": "balanced", "name": "x"}).status_code == 400
     assert client.delete(f"/api/deployments/{r['id']}").json()["deleted"] == r["id"]
+
+
+def test_fleet_and_placement():
+    fleet = client.get("/api/clusters").json()["clusters"]
+    assert len(fleet) == 3
+    assert all(c["agent_status"] == "connected" for c in fleet)
+    assert all(g["free"] == g["count"] - g["used"] for c in fleet for g in c["gpus"])
+
+    # H100 profile: cloud-burst has 4 free H100s at spot pricing -> recommended
+    p = client.post("/api/placement", json={
+        "model_id": "llama-4-scout", "profile_id": "balanced"}).json()
+    assert p["recommended"]["cluster_id"] == "cloud-burst"
+    assert any("free" in r for r in p["recommended"]["reasons"])
+
+    # EU residency: only the EU cluster qualifies; it has 1 free L40S
+    p_eu = client.post("/api/placement", json={
+        "model_id": "mistral-small-3.2", "profile_id": "balanced",
+        "residency": "eu"}).json()
+    assert p_eu["recommended"]["cluster_id"] == "eu-west-osh"
+    excluded = [c for c in p_eu["clusters"] if not c["eligible"]]
+    assert any("residency" in r for c in excluded for r in c["reasons"])
+
+
+def test_deployment_consumes_and_releases_gpu_capacity():
+    def free_h100(cluster_id):
+        fleet = client.get("/api/clusters").json()["clusters"]
+        c = next(x for x in fleet if x["id"] == cluster_id)
+        return next(g for g in c["gpus"] if g["family"] == "H100")["free"]
+
+    before = free_h100("cloud-burst")
+    r = client.post("/api/deployments", json={
+        "model_id": "llama-4-scout", "profile_id": "balanced",
+        "cluster_id": "cloud-burst", "name": "scout-burst"}).json()
+    assert free_h100("cloud-burst") == before - 1
+    client.delete(f"/api/deployments/{r['id']}")
+    assert free_h100("cloud-burst") == before
 
 
 def test_openai_compatible_gateway_auto_routing():

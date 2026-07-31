@@ -20,9 +20,17 @@ interface Deployment {
   model_name: string;
   profile: Profile;
   api_key: string;
+  cluster_id: string | null;
+  cluster_name: string | null;
   status: string;
   progress: number;
   endpoint_path: string;
+}
+
+interface Placement {
+  recommended: { cluster_id: string; cluster_name: string; reasons: string[] } | null;
+  clusters: { cluster_id: string; cluster_name: string; eligible: boolean; reasons: string[] }[];
+  requirement: string;
 }
 
 const STAGES = [
@@ -51,6 +59,10 @@ export default function Deploy() {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState("");
+  const [cluster, setCluster] = useState("auto");
+  const [clusterList, setClusterList] = useState<{ id: string; name: string }[]>([]);
+  const [placement, setPlacement] = useState<Placement | null>(null);
+  const [err, setErr] = useState("");
 
   const hostable = useMemo(() => models.filter((m) => m.self_hostable), [models]);
   const [params] = useSearchParams();
@@ -66,8 +78,24 @@ export default function Deploy() {
       if (preselect) setModelId(preselect.id);
     });
     fetchDeployments().then(setDeployments);
+    fetch("/api/clusters")
+      .then((r) => r.json())
+      .then((d) => setClusterList(d.clusters.map((c: any) => ({ id: c.id, name: c.name }))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // fleet placement preview whenever model/profile changes
+  useEffect(() => {
+    if (!modelId || !profileId) return;
+    fetch("/api/placement", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: modelId, profile_id: profileId }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setPlacement)
+      .catch(() => setPlacement(null));
+  }, [modelId, profileId]);
 
   useEffect(() => {
     if (!modelId) return;
@@ -87,12 +115,20 @@ export default function Deploy() {
 
   const deploy = async () => {
     setBusy(true);
+    setErr("");
     try {
-      await fetch("/api/deployments", {
+      const r = await fetch("/api/deployments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: modelId, profile_id: profileId, name }),
+        body: JSON.stringify({
+          model_id: modelId, profile_id: profileId, name,
+          cluster_id: cluster === "auto" ? null : cluster,
+        }),
       });
+      if (!r.ok) {
+        setErr((await r.json()).detail ?? "deployment failed");
+        return;
+      }
       setName("");
       setDeployments(await fetchDeployments());
     } finally {
@@ -171,6 +207,38 @@ export default function Deploy() {
           ))}
         </div>
 
+        <div className="grid md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="text-xs text-muted block mb-1.5">Target cluster</label>
+            <select className="input w-full" value={cluster} onChange={(e) => setCluster(e.target.value)}>
+              <option value="auto">Auto — fleet placement engine decides</option>
+              {clusterList.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+          {cluster === "auto" && placement && (
+            <div className="rounded-xl border border-edge bg-raised/40 px-4 py-3 text-xs">
+              {placement.recommended ? (
+                <>
+                  <div className="text-s1 mb-1">
+                    → will schedule on {placement.recommended.cluster_name}
+                  </div>
+                  <div className="text-muted">
+                    {placement.recommended.reasons.join(" · ")}
+                  </div>
+                </>
+              ) : (
+                <div className="text-warn">
+                  No cluster currently has {placement.requirement} free — pick a smaller
+                  profile or free capacity.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {err && <div className="text-sm text-crit mb-3">{err}</div>}
         <button className="btn" onClick={deploy} disabled={busy || !modelId || !profileId}>
           {busy ? "Deploying…" : `Deploy ${model?.name ?? ""}`}
         </button>
@@ -198,6 +266,9 @@ export default function Deploy() {
                   <div className="text-xs text-muted">
                     {d.model_name} · {d.profile.gpus} · {d.profile.quantization} · $
                     {d.profile.est_cost_hr.toFixed(2)}/hr
+                    {d.cluster_name && (
+                      <> · <span className="text-ink2">{d.cluster_name}</span></>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-3">

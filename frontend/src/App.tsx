@@ -8,9 +8,11 @@ import Deploy from "./pages/Deploy";
 import Evals from "./pages/Evals";
 import Migrate from "./pages/Migrate";
 import Integrate from "./pages/Integrate";
+import Clusters from "./pages/Clusters";
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: "▦" },
+  { to: "/clusters", label: "GPU Fleet", icon: "⬢" },
   { to: "/models", label: "Model Catalog", icon: "◈" },
   { to: "/recommend", label: "Recommend", icon: "✦" },
   { to: "/evals", label: "Evals", icon: "⚖" },
@@ -61,6 +63,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/clusters" element={<Clusters />} />
           <Route path="/models" element={<Catalog />} />
           <Route path="/recommend" element={<Recommend />} />
           <Route path="/evals" element={<Evals />} />

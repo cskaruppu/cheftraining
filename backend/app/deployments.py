@@ -10,6 +10,7 @@ import secrets
 import time
 import uuid
 
+from . import clusters
 from .catalog import MODELS_BY_ID
 
 # Rough deployment size classes for the self-hostable catalog entries.
@@ -71,13 +72,26 @@ def serving_profiles(model_id: str) -> list[dict]:
     return out
 
 
-def create(model_id: str, profile_id: str, name: str) -> dict:
+def create(model_id: str, profile_id: str, name: str,
+           cluster_id: str | None = None, residency: str | None = None) -> dict:
     model = MODELS_BY_ID.get(model_id)
     if not model or not model["self_hostable"]:
         raise ValueError("model is not self-hostable")
     profile = next((p for p in serving_profiles(model_id) if p["id"] == profile_id), None)
     if not profile:
         raise ValueError("unknown serving profile")
+
+    if not cluster_id:  # auto-placement via the fleet engine
+        placement = clusters.place(profile["gpus"], residency)
+        if not placement["recommended"]:
+            raise ValueError("no cluster has capacity for this profile"
+                             + (f" with residency '{residency}'" if residency else ""))
+        cluster_id = placement["recommended"]["cluster_id"]
+    if cluster_id not in clusters.CLUSTERS_BY_ID:
+        raise ValueError("unknown cluster")
+    if not clusters.allocate(cluster_id, profile["gpus"]):
+        raise ValueError(f"cluster '{cluster_id}' lacks free GPUs for this profile")
+
     dep_id = uuid.uuid4().hex[:10]
     dep = {
         "id": dep_id,
@@ -85,6 +99,8 @@ def create(model_id: str, profile_id: str, name: str) -> dict:
         "model_id": model_id,
         "model_name": model["name"],
         "profile": profile,
+        "cluster_id": cluster_id,
+        "cluster_name": clusters.CLUSTERS_BY_ID[cluster_id]["name"],
         "api_key": f"mk-{secrets.token_hex(16)}",
         "created_at": time.time(),
     }
@@ -109,6 +125,7 @@ def _public(dep: dict) -> dict:
         "id": dep["id"], "name": dep["name"],
         "model_id": dep["model_id"], "model_name": dep["model_name"],
         "profile": dep["profile"], "api_key": dep["api_key"],
+        "cluster_id": dep.get("cluster_id"), "cluster_name": dep.get("cluster_name"),
         "status": status, "progress": progress,
         # In production this is the per-deployment KServe endpoint; in the
         # demo every deployment is served by the built-in gateway.
@@ -122,4 +139,9 @@ def list_all() -> list[dict]:
 
 
 def delete(dep_id: str) -> bool:
-    return _DEPLOYMENTS.pop(dep_id, None) is not None
+    dep = _DEPLOYMENTS.pop(dep_id, None)
+    if dep is None:
+        return False
+    if dep.get("cluster_id"):
+        clusters.release(dep["cluster_id"], dep["profile"]["gpus"])
+    return True

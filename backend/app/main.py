@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, deployments, evals, integration, migrate
+from . import analytics, clusters, deployments, evals, integration, migrate
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
 
@@ -191,12 +191,36 @@ def post_eval(req: EvalRequest):
         raise HTTPException(400, str(e))
 
 
+# ----------------------------- clusters -------------------------------
+
+@app.get("/api/clusters")
+def list_clusters():
+    return {"clusters": clusters.snapshot()}
+
+
+class PlacementRequest(BaseModel):
+    model_id: str
+    profile_id: str
+    residency: str | None = None
+
+
+@app.post("/api/placement")
+def post_placement(req: PlacementRequest):
+    profile = next((p for p in deployments.serving_profiles(req.model_id)
+                    if p["id"] == req.profile_id), None)
+    if not profile:
+        raise HTTPException(404, "unknown model/profile")
+    return clusters.place(profile["gpus"], req.residency)
+
+
 # --------------------------- deployments ------------------------------
 
 class DeploymentRequest(BaseModel):
     model_id: str
     profile_id: str
     name: str = ""
+    cluster_id: str | None = None
+    residency: str | None = None
 
 
 @app.get("/api/models/{model_id}/profiles")
@@ -210,7 +234,8 @@ def get_profiles(model_id: str):
 @app.post("/api/deployments")
 def create_deployment(req: DeploymentRequest):
     try:
-        return deployments.create(req.model_id, req.profile_id, req.name)
+        return deployments.create(req.model_id, req.profile_id, req.name,
+                                  req.cluster_id, req.residency)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
