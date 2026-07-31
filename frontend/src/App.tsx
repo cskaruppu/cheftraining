@@ -7,6 +7,7 @@ import Playground from "./pages/Playground";
 import Deploy from "./pages/Deploy";
 import Evals from "./pages/Evals";
 import Migrate from "./pages/Migrate";
+import Integrate from "./pages/Integrate";
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: "▦" },
@@ -15,6 +16,7 @@ const NAV = [
   { to: "/evals", label: "Evals", icon: "⚖" },
   { to: "/migrate", label: "Migrate", icon: "☁" },
   { to: "/deploy", label: "Deploy", icon: "⇪" },
+  { to: "/integrate", label: "Integrate", icon: "‹›" },
   { to: "/compare", label: "Compare", icon: "⇄" },
   { to: "/playground", label: "Playground", icon: "▷" },
 ];
@@ -64,6 +66,7 @@ export default function App() {
           <Route path="/evals" element={<Evals />} />
           <Route path="/migrate" element={<Migrate />} />
           <Route path="/deploy" element={<Deploy />} />
+          <Route path="/integrate" element={<Integrate />} />
           <Route path="/compare" element={<Compare />} />
           <Route path="/playground" element={<Playground />} />
         </Routes>

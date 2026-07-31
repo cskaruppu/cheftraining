@@ -119,6 +119,22 @@ def test_migrate_plan_low_volume_is_honest():
         "cloud_model_id": "phi-4"}).status_code == 400
 
 
+def test_integration_test_suite():
+    r = client.post("/api/integration-test", json={"model_id": "claude-sonnet-4.5"}).json()
+    assert r["overall"] in {"pass", "warn"}
+    ids = [c["id"] for c in r["checks"]]
+    assert ids == ["connectivity", "auth", "streaming", "json_schema", "groundedness"]
+    assert all(c["status"] in {"pass", "warn"} for c in r["checks"])
+    grounded = next(c for c in r["checks"] if c["id"] == "groundedness")
+    assert "measured, not promised" in grounded["detail"]
+    # deterministic per model
+    r2 = client.post("/api/integration-test", json={"model_id": "claude-sonnet-4.5"}).json()
+    assert r2["checks"] == r["checks"]
+    schema_check = next(c for c in r["checks"] if c["id"] == "json_schema")
+    assert "/20 responses validated" in schema_check["detail"]
+    assert client.post("/api/integration-test", json={"model_id": "nope"}).status_code == 400
+
+
 def test_evals_run():
     r = client.post("/api/evals", json={
         "prompts": ["Summarize this contract", "Draft an escalation email"],

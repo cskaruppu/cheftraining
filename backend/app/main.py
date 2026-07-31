@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, deployments, evals, migrate
+from . import analytics, deployments, evals, integration, migrate
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
 
@@ -143,6 +143,20 @@ def playground(req: PlaygroundRequest):
         sim["receipt"] = routing_receipt(model, sim["tokens_in"], sim["tokens_out"])
         results.append(sim)
     return {"results": results}
+
+
+# ------------------------ integration test ----------------------------
+
+class IntegrationTestRequest(BaseModel):
+    model_id: str
+
+
+@app.post("/api/integration-test")
+def post_integration_test(req: IntegrationTestRequest):
+    try:
+        return integration.run_integration_test(req.model_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------------------------- migrate ---------------------------------
