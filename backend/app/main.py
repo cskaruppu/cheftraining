@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, deployments, evals
+from . import analytics, deployments, evals, migrate
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
 
@@ -143,6 +143,22 @@ def playground(req: PlaygroundRequest):
         sim["receipt"] = routing_receipt(model, sim["tokens_in"], sim["tokens_out"])
         results.append(sim)
     return {"results": results}
+
+
+# ---------------------------- migrate ---------------------------------
+
+class MigrateRequest(BaseModel):
+    cloud_model_id: str
+    monthly_m_tokens: float = 50
+    use_case: str = "chatbot"
+
+
+@app.post("/api/migrate")
+def post_migrate(req: MigrateRequest):
+    try:
+        return migrate.migrate_plan(req.cloud_model_id, req.monthly_m_tokens, req.use_case)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ----------------------------- evals ----------------------------------

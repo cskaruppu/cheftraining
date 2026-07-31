@@ -89,6 +89,36 @@ def test_routing_receipt_on_expensive_model():
     assert alt and alt["savings_pct"] > 0
 
 
+def test_migrate_plan_high_volume_saves():
+    r = client.post("/api/migrate", json={
+        "cloud_model_id": "claude-opus-4.5",
+        "monthly_m_tokens": 500,
+        "use_case": "chatbot",
+    }).json()
+    assert r["cloud"]["monthly_cost"] > 0
+    assert len(r["alternatives"]) >= 1
+    best = r["alternatives"][0]
+    assert best["savings_monthly"] > 0 and best["savings_pct"] > 0
+    assert best["quality_delta"] >= -12
+    assert len(r["projection"]) == 12
+    assert r["projection"][11]["cloud"] > r["projection"][0]["cloud"]
+    assert "saves" in (r["verdict"] or "")
+
+
+def test_migrate_plan_low_volume_is_honest():
+    # at low volume dedicated GPUs cost more than the API — the verdict
+    # must say so instead of overselling migration
+    r = client.post("/api/migrate", json={
+        "cloud_model_id": "gemini-2.5-flash",
+        "monthly_m_tokens": 5,
+        "use_case": "chatbot",
+    }).json()
+    assert "cost-competitive" in (r["verdict"] or "")
+    # migrating away from a self-hostable model is rejected
+    assert client.post("/api/migrate", json={
+        "cloud_model_id": "phi-4"}).status_code == 400
+
+
 def test_evals_run():
     r = client.post("/api/evals", json={
         "prompts": ["Summarize this contract", "Draft an escalation email"],

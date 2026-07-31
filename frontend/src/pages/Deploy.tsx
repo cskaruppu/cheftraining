@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ModelInfo, api } from "../lib/api";
 import { PageHeader, Spinner } from "../components/ui";
 
@@ -52,14 +53,20 @@ export default function Deploy() {
   const [copied, setCopied] = useState("");
 
   const hostable = useMemo(() => models.filter((m) => m.self_hostable), [models]);
+  const [params] = useSearchParams();
 
   useEffect(() => {
     api.models().then((d) => {
       setModels(d.models);
-      const first = d.models.find((m) => m.self_hostable);
-      if (first) setModelId(first.id);
+      // honor ?model=<id> handoff (e.g. from the Migrate page CTA)
+      const wanted = params.get("model");
+      const preselect =
+        d.models.find((m) => m.self_hostable && m.id === wanted) ??
+        d.models.find((m) => m.self_hostable);
+      if (preselect) setModelId(preselect.id);
     });
     fetchDeployments().then(setDeployments);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
