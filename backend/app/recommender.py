@@ -140,6 +140,38 @@ def _compare_chosen(chosen_id: str, results: list, dim: str) -> dict:
             "same": chosen["id"] == suggested["id"]}
 
 
+def routing_receipt(model: dict, tokens_in: int, tokens_out: int,
+                    dim: str = "chat", routed: bool = False) -> dict:
+    """Per-request transparency: what this call cost and what the
+    cheapest comparable model would have cost instead."""
+    def call_cost(m: dict) -> float:
+        return (tokens_in * m["input_price"] + tokens_out * m["output_price"]) / 1_000_000
+
+    cost = call_cost(model)
+    comparable = [m for m in MODELS
+                  if m["id"] != model["id"]
+                  and m["quality"][dim] >= model["quality"][dim] - 5]
+    receipt = {
+        "model_id": model["id"],
+        "reason": ("auto-routed: best weighted quality/cost/speed for this profile"
+                   if routed else "explicitly requested by caller"),
+        "dimension": dim,
+        "cost_usd": round(cost, 6),
+    }
+    if comparable:
+        alt = min(comparable, key=call_cost)
+        alt_cost = call_cost(alt)
+        if alt_cost < cost:
+            receipt["cheapest_comparable"] = {
+                "model_id": alt["id"],
+                "model_name": alt["name"],
+                "cost_usd": round(alt_cost, 6),
+                "savings_pct": round((1 - alt_cost / cost) * 100, 1) if cost else 0.0,
+                "quality_delta": alt["quality"][dim] - model["quality"][dim],
+            }
+    return receipt
+
+
 def similar_models(model_id: str, top_n: int = 3) -> list[dict]:
     """Nearest neighbours over a normalized capability/price/quality vector."""
     base = MODELS_BY_ID.get(model_id)

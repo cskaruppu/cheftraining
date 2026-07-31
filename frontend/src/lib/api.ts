@@ -58,6 +58,20 @@ export interface AnalyticsSummary {
   }[];
 }
 
+export interface RoutingReceipt {
+  model_id: string;
+  reason: string;
+  dimension: string;
+  cost_usd: number;
+  cheapest_comparable?: {
+    model_id: string;
+    model_name: string;
+    cost_usd: number;
+    savings_pct: number;
+    quality_delta: number;
+  };
+}
+
 export interface PlaygroundResult {
   model_id: string;
   model_name: string;
@@ -67,6 +81,7 @@ export interface PlaygroundResult {
   tokens_out: number;
   latency_ms: number;
   cost: number;
+  receipt?: RoutingReceipt;
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {

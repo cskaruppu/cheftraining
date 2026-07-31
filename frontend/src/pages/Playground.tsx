@@ -104,6 +104,16 @@ export default function Playground() {
                   <span className="text-ink2">{fmtMoney(r.cost)}</span> cost
                 </span>
               </div>
+              {r.receipt?.cheapest_comparable && (
+                <div className="text-[11px] text-muted mt-2 bg-raised rounded-lg px-2.5 py-1.5">
+                  <span className="text-s3">receipt</span> · cheapest comparable:{" "}
+                  <span className="text-ink2">{r.receipt.cheapest_comparable.model_name}</span>{" "}
+                  would cost {fmtMoney(r.receipt.cheapest_comparable.cost_usd)} (
+                  <span className="text-s3">−{r.receipt.cheapest_comparable.savings_pct.toFixed(0)}%</span>
+                  , quality {r.receipt.cheapest_comparable.quality_delta >= 0 ? "+" : ""}
+                  {r.receipt.cheapest_comparable.quality_delta})
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -5,11 +5,13 @@ import Recommend from "./pages/Recommend";
 import Compare from "./pages/Compare";
 import Playground from "./pages/Playground";
 import Deploy from "./pages/Deploy";
+import Evals from "./pages/Evals";
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: "▦" },
   { to: "/models", label: "Model Catalog", icon: "◈" },
   { to: "/recommend", label: "Recommend", icon: "✦" },
+  { to: "/evals", label: "Evals", icon: "⚖" },
   { to: "/deploy", label: "Deploy", icon: "⇪" },
   { to: "/compare", label: "Compare", icon: "⇄" },
   { to: "/playground", label: "Playground", icon: "▷" },
@@ -57,6 +59,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/models" element={<Catalog />} />
           <Route path="/recommend" element={<Recommend />} />
+          <Route path="/evals" element={<Evals />} />
           <Route path="/deploy" element={<Deploy />} />
           <Route path="/compare" element={<Compare />} />
           <Route path="/playground" element={<Playground />} />

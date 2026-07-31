@@ -74,3 +74,38 @@ def test_openai_compatible_gateway_auto_routing():
     assert r["object"] == "chat.completion"
     assert r["modelect"]["routed"] is True
     assert r["usage"]["total_tokens"] > 0
+    assert r["modelect"]["receipt"]["cost_usd"] >= 0
+    assert "auto-routed" in r["modelect"]["receipt"]["reason"]
+
+
+def test_routing_receipt_on_expensive_model():
+    r = client.post("/v1/chat/completions", json={
+        "model": "claude-opus-4.5",
+        "messages": [{"role": "user", "content": "hello"}],
+    }).json()
+    receipt = r["modelect"]["receipt"]
+    assert receipt["reason"] == "explicitly requested by caller"
+    alt = receipt.get("cheapest_comparable")
+    assert alt and alt["savings_pct"] > 0
+
+
+def test_evals_run():
+    r = client.post("/api/evals", json={
+        "prompts": ["Summarize this contract", "Draft an escalation email"],
+        "model_ids": ["claude-sonnet-4.5", "gpt-5-mini", "llama-4-maverick"],
+        "use_case": "chatbot",
+    }).json()
+    assert r["mode"] == "simulated"
+    assert len(r["results"]) == 3
+    assert r["results"][0]["avg_judge_score"] >= r["results"][-1]["avg_judge_score"]
+    assert r["winner_id"] and r["value_pick_id"] and r["verdict"]
+    assert len(r["results"][0]["per_prompt"]) == 2
+    # deterministic: same request, same scores
+    r2 = client.post("/api/evals", json={
+        "prompts": ["Summarize this contract", "Draft an escalation email"],
+        "model_ids": ["claude-sonnet-4.5", "gpt-5-mini", "llama-4-maverick"],
+        "use_case": "chatbot",
+    }).json()
+    assert r2["results"][0]["avg_judge_score"] == r["results"][0]["avg_judge_score"]
+    assert client.post("/api/evals", json={
+        "prompts": [], "model_ids": ["gpt-5-mini", "phi-4"]}).status_code == 400

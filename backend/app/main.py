@@ -18,9 +18,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, deployments
+from . import analytics, deployments, evals
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
-from .recommender import recommend, similar_models
+from .recommender import recommend, routing_receipt, similar_models
 
 app = FastAPI(title="Modelect — Multi-LLM Orchestrator", version="0.1.0-demo")
 
@@ -136,7 +136,29 @@ def playground(req: PlaygroundRequest):
     missing = [i for i in req.model_ids if i not in MODELS_BY_ID]
     if missing:
         raise HTTPException(404, f"unknown model(s): {missing}")
-    return {"results": [_simulate_completion(MODELS_BY_ID[i], req.prompt) for i in req.model_ids[:3]]}
+    results = []
+    for i in req.model_ids[:3]:
+        model = MODELS_BY_ID[i]
+        sim = _simulate_completion(model, req.prompt)
+        sim["receipt"] = routing_receipt(model, sim["tokens_in"], sim["tokens_out"])
+        results.append(sim)
+    return {"results": results}
+
+
+# ----------------------------- evals ----------------------------------
+
+class EvalRequest(BaseModel):
+    prompts: list[str]
+    model_ids: list[str]
+    use_case: str = "chatbot"
+
+
+@app.post("/api/evals")
+def post_eval(req: EvalRequest):
+    try:
+        return evals.run_eval(req.prompts, req.model_ids, req.use_case)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # --------------------------- deployments ------------------------------
@@ -220,7 +242,10 @@ async def chat_completions(req: ChatCompletionRequest):
             "usage": {"prompt_tokens": sim["tokens_in"], "completion_tokens": sim["tokens_out"],
                       "total_tokens": sim["tokens_in"] + sim["tokens_out"]},
             "modelect": {"routed": req.model == "auto", "latency_ms": sim["latency_ms"],
-                        "cost_usd": sim["cost"]},
+                        "cost_usd": sim["cost"],
+                        "receipt": routing_receipt(model, sim["tokens_in"],
+                                                   sim["tokens_out"],
+                                                   routed=req.model == "auto")},
         }
 
     async def sse():
