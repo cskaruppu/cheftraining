@@ -1,3 +1,4 @@
+import { ReactNode } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Catalog from "./pages/Catalog";
@@ -10,55 +11,179 @@ import Migrate from "./pages/Migrate";
 import Integrate from "./pages/Integrate";
 import Clusters from "./pages/Clusters";
 
-const NAV = [
-  { to: "/dashboard", label: "Dashboard", icon: "▦" },
-  { to: "/clusters", label: "GPU Fleet", icon: "⬢" },
-  { to: "/models", label: "Model Catalog", icon: "◈" },
-  { to: "/recommend", label: "Recommend", icon: "✦" },
-  { to: "/evals", label: "Evals", icon: "⚖" },
-  { to: "/migrate", label: "Migrate", icon: "☁" },
-  { to: "/deploy", label: "Deploy", icon: "⇪" },
-  { to: "/integrate", label: "Integrate", icon: "‹›" },
-  { to: "/compare", label: "Compare", icon: "⇄" },
-  { to: "/playground", label: "Playground", icon: "▷" },
+function Icon({ children }: { children: ReactNode }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      {children}
+    </svg>
+  );
+}
+
+const ICONS: Record<string, ReactNode> = {
+  dashboard: (
+    <Icon>
+      <rect x="3" y="3" width="7" height="9" rx="1" />
+      <rect x="14" y="3" width="7" height="5" rx="1" />
+      <rect x="14" y="12" width="7" height="9" rx="1" />
+      <rect x="3" y="16" width="7" height="5" rx="1" />
+    </Icon>
+  ),
+  fleet: (
+    <Icon>
+      <rect x="2" y="4" width="20" height="6" rx="2" />
+      <rect x="2" y="14" width="20" height="6" rx="2" />
+      <path d="M6 7h.01M6 17h.01" />
+    </Icon>
+  ),
+  catalog: (
+    <Icon>
+      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      <path d="m3.3 7 8.7 5 8.7-5" />
+      <path d="M12 22V12" />
+    </Icon>
+  ),
+  recommend: (
+    <Icon>
+      <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
+    </Icon>
+  ),
+  evals: (
+    <Icon>
+      <path d="m3 17 2 2 4-4" />
+      <path d="m3 7 2 2 4-4" />
+      <path d="M13 6h8M13 12h8M13 18h8" />
+    </Icon>
+  ),
+  compare: (
+    <Icon>
+      <path d="m16 3 4 4-4 4" />
+      <path d="M20 7H4" />
+      <path d="m8 21-4-4 4-4" />
+      <path d="M4 17h16" />
+    </Icon>
+  ),
+  migrate: (
+    <Icon>
+      <path d="M4.4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2" />
+      <path d="M12 13v8" />
+      <path d="m8 17 4 4 4-4" />
+    </Icon>
+  ),
+  deploy: (
+    <Icon>
+      <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+      <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+      <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+      <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+    </Icon>
+  ),
+  integrate: (
+    <Icon>
+      <path d="m16 18 6-6-6-6" />
+      <path d="m8 6-6 6 6 6" />
+    </Icon>
+  ),
+  playground: (
+    <Icon>
+      <polygon points="6 3 20 12 6 21 6 3" />
+    </Icon>
+  ),
+};
+
+const GROUPS: { label: string; items: { to: string; label: string; icon: string }[] }[] = [
+  {
+    label: "Overview",
+    items: [
+      { to: "/dashboard", label: "Dashboard", icon: "dashboard" },
+      { to: "/clusters", label: "GPU Fleet", icon: "fleet" },
+    ],
+  },
+  {
+    label: "Decide",
+    items: [
+      { to: "/models", label: "Model Catalog", icon: "catalog" },
+      { to: "/recommend", label: "Recommend", icon: "recommend" },
+      { to: "/evals", label: "Evals", icon: "evals" },
+      { to: "/compare", label: "Compare", icon: "compare" },
+    ],
+  },
+  {
+    label: "Deploy",
+    items: [
+      { to: "/migrate", label: "Migrate from Cloud", icon: "migrate" },
+      { to: "/deploy", label: "Deployments", icon: "deploy" },
+    ],
+  },
+  {
+    label: "Integrate",
+    items: [
+      { to: "/integrate", label: "Integrate & Verify", icon: "integrate" },
+      { to: "/playground", label: "Playground", icon: "playground" },
+    ],
+  },
 ];
 
 export default function App() {
   return (
     <div className="flex min-h-screen">
-      <aside className="w-56 shrink-0 border-r border-edge bg-surface flex flex-col">
-        <div className="px-5 py-5 border-b border-edge">
-          <div className="text-lg font-semibold tracking-tight">
-            Modelect<span className="text-s1">.</span>
+      <aside className="w-60 shrink-0 border-r border-edge bg-surface flex flex-col">
+        <div className="flex items-center gap-3 px-5 py-5">
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-s1 to-[#1c5cab] grid place-items-center text-white font-semibold text-sm shadow-lg shadow-s1/20">
+            M
           </div>
-          <div className="text-[11px] text-muted mt-0.5">
-            Multi-LLM Orchestrator
+          <div>
+            <div className="text-[15px] font-semibold tracking-tight leading-none">
+              Modelect
+            </div>
+            <div className="text-[10px] text-muted mt-1 tracking-wide uppercase">
+              LLM Orchestrator
+            </div>
           </div>
         </div>
-        <nav className="flex-1 py-3">
-          {NAV.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-5 py-2.5 text-sm transition ${
-                  isActive
-                    ? "text-ink bg-raised border-r-2 border-s1"
-                    : "text-ink2 hover:text-ink"
-                }`
-              }
-            >
-              <span className="text-s1 w-4 text-center">{n.icon}</span>
-              {n.label}
-            </NavLink>
+
+        <nav className="flex-1 px-3 pb-4 overflow-y-auto">
+          {GROUPS.map((g) => (
+            <div key={g.label} className="mt-4 first:mt-1">
+              <div className="px-3 mb-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted/80">
+                {g.label}
+              </div>
+              <div className="space-y-0.5">
+                {g.items.map((n) => (
+                  <NavLink
+                    key={n.to}
+                    to={n.to}
+                    className={({ isActive }) =>
+                      `group flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] transition-colors ${
+                        isActive
+                          ? "bg-raised text-ink shadow-sm"
+                          : "text-ink2 hover:bg-raised/50 hover:text-ink"
+                      }`
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        <span className={isActive ? "text-s1" : "text-muted group-hover:text-ink2 transition-colors"}>
+                          {ICONS[n.icon]}
+                        </span>
+                        {n.label}
+                      </>
+                    )}
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
-        <div className="px-5 py-4 border-t border-edge text-[11px] text-muted leading-relaxed">
-          Demo build · seed data
-          <br />
-          Gateway: <code className="text-ink2">/v1/chat/completions</code>
+
+        <div className="px-5 py-4 border-t border-edge flex items-center justify-between">
+          <span className="text-[11px] text-muted">
+            Gateway <code className="text-ink2">/v1</code>
+          </span>
+          <span className="chip !text-[10px]">demo · v0.6</span>
         </div>
       </aside>
+
       <main className="flex-1 px-8 py-7 max-w-[1240px]">
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
