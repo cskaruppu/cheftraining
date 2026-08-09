@@ -194,7 +194,46 @@ MODELS = [
     },
 ]
 
+# Size metadata: (known parameter count in billions or None for
+# undisclosed closed models, size class). "slm" = small language model
+# (~<=30B), the tier the market's SLM conversation is about.
+_SIZING = {
+    "gpt-5.1": (None, "large"),
+    "gpt-5-mini": (None, "mid"),
+    "o4-mini": (None, "mid"),
+    "claude-opus-4.5": (None, "large"),
+    "claude-sonnet-4.5": (None, "large"),
+    "claude-haiku-4.5": (None, "mid"),
+    "gemini-2.5-pro": (None, "large"),
+    "gemini-2.5-flash": (None, "mid"),
+    "llama-4-maverick": (400, "large"),
+    "llama-4-scout": (109, "mid"),
+    "mistral-large-2.1": (123, "mid"),
+    "mistral-small-3.2": (24, "slm"),
+    "deepseek-v3.2": (671, "large"),
+    "deepseek-r1": (671, "large"),
+    "qwen3-235b": (235, "large"),
+    "command-a": (111, "mid"),
+    "grok-4": (None, "large"),
+    "nova-pro": (None, "mid"),
+    "phi-4": (14, "slm"),
+    "vllm-local-llama-3.3-70b": (70, "mid"),
+}
+_SIZE_RANK = {"slm": 0, "mid": 1, "large": 2}
+
+for _m in MODELS:
+    _params, _cls = _SIZING[_m["id"]]
+    _m["params_b"] = _params
+    _m["size_class"] = _cls
+
 MODELS_BY_ID = {m["id"]: m for m in MODELS}
+
+
+def size_rank(model: dict) -> tuple:
+    """Sort key: smaller class first, then known params, then price."""
+    return (_SIZE_RANK[model["size_class"]],
+            model["params_b"] if model["params_b"] is not None else 9999,
+            blended_price(model))
 
 USE_CASES = [
     {"id": "chatbot", "label": "Chatbot / assistant", "dimension": "chat"},

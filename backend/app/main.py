@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -73,11 +74,14 @@ class RecommendRequest(BaseModel):
     weights: dict = Field(default_factory=lambda: {"quality": 50, "cost": 30, "speed": 20})
     constraints: dict = Field(default_factory=dict)
     chosen_id: str | None = None
+    mode: str = "best"  # "best" | "smallest_capable" (SLM-first)
+    quality_floor: int = 80
 
 
 @app.post("/api/recommend")
 def post_recommend(req: RecommendRequest):
-    return recommend(req.use_case, req.weights, req.constraints, req.chosen_id)
+    return recommend(req.use_case, req.weights, req.constraints, req.chosen_id,
+                     mode=req.mode, quality_floor=req.quality_floor)
 
 
 class CompareRequest(BaseModel):
@@ -324,6 +328,21 @@ async def chat_completions(req: ChatCompletionRequest):
 
 
 # Optional single-container mode: serve the built dashboard if present.
+class _SPAStaticFiles(StaticFiles):
+    """Serve index.html for unknown paths so SPA deep links work."""
+
+    async def get_response(self, path: str, scope):
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            return await super().get_response("index.html", scope)
+        if response.status_code == 404:
+            response = await super().get_response("index.html", scope)
+        return response
+
+
 _static = Path(__file__).resolve().parent.parent / "static"
 if _static.is_dir():
-    app.mount("/", StaticFiles(directory=_static, html=True), name="ui")
+    app.mount("/", _SPAStaticFiles(directory=_static, html=True), name="ui")

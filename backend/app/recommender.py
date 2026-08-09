@@ -6,7 +6,8 @@ product never gives a black-box answer.
 """
 import math
 
-from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS, blended_price, avg_quality
+from .catalog import (MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS,
+                      blended_price, avg_quality, size_rank)
 
 USE_CASE_DIM = {u["id"]: u["dimension"] for u in USE_CASES}
 
@@ -37,7 +38,11 @@ def _passes_constraints(model: dict, c: dict) -> tuple[bool, list[str]]:
 
 
 def recommend(use_case: str, weights: dict, constraints: dict | None = None,
-              chosen_id: str | None = None, top_n: int = 6) -> dict:
+              chosen_id: str | None = None, top_n: int = 6,
+              mode: str = "best", quality_floor: int = 80) -> dict:
+    """mode='best': weighted quality/cost/speed ranking (default).
+    mode='smallest_capable': SLM-first — rank the smallest models that
+    clear the quality floor on the use-case dimension."""
     constraints = constraints or {}
     dim = USE_CASE_DIM.get(use_case, "chat")
 
@@ -82,13 +87,37 @@ def recommend(use_case: str, weights: dict, constraints: dict | None = None,
             "blended_price": round(blended_price(m), 2),
         })
 
-    results.sort(key=lambda r: r["score"], reverse=True)
-    results = results[:top_n]
-
-    for rank, r in enumerate(results):
-        r["reasons"] = _reasons(r, results, dim, rank)
+    if mode == "smallest_capable":
+        capable = [r for r in results if r["model"]["quality"][dim] >= quality_floor]
+        for r in results:
+            if r not in capable:
+                excluded.append({"id": r["model"]["id"], "name": r["model"]["name"],
+                                 "reason": f"{dim} quality {r['model']['quality'][dim]} "
+                                           f"below the {quality_floor} floor"})
+        capable.sort(key=lambda r: size_rank(r["model"]))
+        results = capable[:top_n]
+        for r in results:
+            m = r["model"]
+            size = f"{m['params_b']}B params" if m["params_b"] else f"{m['size_class']} class (params undisclosed)"
+            r["reasons"] = [
+                f"Smallest capable option: {size}, clears the {quality_floor} {dim}-quality floor "
+                f"({m['quality'][dim]}/100)",
+                f"Blended cost ${r['blended_price']:.2f} per 1M tokens",
+                f"~{m['latency_ms']} ms first token, ~{m['throughput_tps']} tok/s",
+            ]
+            if m["self_hostable"]:
+                r["reasons"].append(
+                    "Open weights — deployable on a single small GPU (see Deploy)"
+                    if m["size_class"] == "slm"
+                    else "Open weights — self-hostable on your cluster (see Deploy)")
+    else:
+        results.sort(key=lambda r: r["score"], reverse=True)
+        results = results[:top_n]
+        for rank, r in enumerate(results):
+            r["reasons"] = _reasons(r, results, dim, rank)
 
     out = {"results": results, "excluded": excluded, "use_case": use_case, "dimension": dim,
+           "mode": mode, "quality_floor": quality_floor if mode == "smallest_capable" else None,
            "weights": {"quality": w_quality, "cost": w_cost, "speed": w_speed}}
 
     if chosen_id and chosen_id in MODELS_BY_ID:

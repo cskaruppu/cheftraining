@@ -29,6 +29,26 @@ def test_recommend_with_constraints():
         assert res["reasons"] and 0 <= res["score"] <= 100
 
 
+def test_smallest_capable_mode():
+    # low floor: Phi-4 (14B SLM, chat 79) is the smallest capable model
+    r = client.post("/api/recommend", json={
+        "use_case": "chatbot", "mode": "smallest_capable", "quality_floor": 78,
+    }).json()
+    assert r["mode"] == "smallest_capable" and r["quality_floor"] == 78
+    assert r["results"][0]["model"]["id"] == "phi-4"
+    assert "Smallest capable" in r["results"][0]["reasons"][0]
+    # raise the floor: SLMs drop out and land in excluded with the reason
+    r2 = client.post("/api/recommend", json={
+        "use_case": "chatbot", "mode": "smallest_capable", "quality_floor": 85,
+    }).json()
+    assert all(res["model"]["quality"]["chat"] >= 85 for res in r2["results"])
+    assert any("below the 85 floor" in e["reason"] for e in r2["excluded"])
+    # catalog carries size metadata
+    models = client.get("/api/models").json()["models"]
+    phi = next(m for m in models if m["id"] == "phi-4")
+    assert phi["size_class"] == "slm" and phi["params_b"] == 14
+
+
 def test_compare_and_similar():
     r = client.post("/api/compare", json={"model_ids": ["gpt-5.1", "claude-opus-4.5"]}).json()
     assert len(r["radar"]) == 7

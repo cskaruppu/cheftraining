@@ -15,6 +15,8 @@ export interface ModelInfo {
   regions: string[];
   knowledge_cutoff: string;
   self_hostable: boolean;
+  params_b: number | null;
+  size_class: "slm" | "mid" | "large";
 }
 
 export interface RecommendResult {

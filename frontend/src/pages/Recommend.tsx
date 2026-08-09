@@ -22,6 +22,8 @@ export default function Recommend() {
   const [minContext, setMinContext] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
   const [chosen, setChosen] = useState("");
+  const [mode, setMode] = useState<"best" | "smallest_capable">("best");
+  const [floor, setFloor] = useState(80);
   const [resp, setResp] = useState<RecommendResponse | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -42,6 +44,8 @@ export default function Recommend() {
           weights,
           constraints,
           chosen_id: chosen || null,
+          mode,
+          quality_floor: floor,
         }),
       );
     } finally {
@@ -69,6 +73,39 @@ export default function Recommend() {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-muted block mb-1.5">Objective</label>
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-raised p-1">
+              {([
+                ["best", "Best overall"],
+                ["smallest_capable", "Smallest capable"],
+              ] as const).map(([m, label]) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`rounded-md px-2 py-1.5 text-xs transition ${
+                    mode === m ? "bg-s1 text-white" : "text-ink2 hover:text-ink"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {mode === "smallest_capable" && (
+              <div className="mt-2">
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-ink2">Quality floor</span>
+                  <span className="text-muted tabular-nums">{floor}/100</span>
+                </div>
+                <input type="range" min={70} max={95} value={floor}
+                  onChange={(e) => setFloor(Number(e.target.value))} />
+                <p className="text-[11px] text-muted mt-1">
+                  SLM-first: ranks the smallest model that clears this quality bar
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="space-y-3">
@@ -181,9 +218,14 @@ export default function Recommend() {
                       {rank === 0 && (
                         <span className="chip border-s1/50 text-s1">suggested</span>
                       )}
+                      {r.model.size_class === "slm" && (
+                        <span className="chip border-s3/50 text-s3">SLM</span>
+                      )}
                     </div>
                     <div className="text-xs text-muted">
-                      {r.model.provider} · ${r.blended_price.toFixed(2)}/1M blended
+                      {r.model.provider}
+                      {r.model.params_b && <> · {r.model.params_b}B</>} · $
+                      {r.blended_price.toFixed(2)}/1M blended
                     </div>
                   </div>
                 </div>

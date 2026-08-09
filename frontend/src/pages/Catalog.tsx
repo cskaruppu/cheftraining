@@ -8,6 +8,7 @@ export default function Catalog() {
   const [q, setQ] = useState("");
   const [provider, setProvider] = useState("");
   const [openOnly, setOpenOnly] = useState(false);
+  const [slmOnly, setSlmOnly] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -24,9 +25,10 @@ export default function Catalog() {
         (m) =>
           (!q || `${m.name} ${m.provider}`.toLowerCase().includes(q.toLowerCase())) &&
           (!provider || m.provider === provider) &&
-          (!openOnly || m.source === "open"),
+          (!openOnly || m.source === "open") &&
+          (!slmOnly || m.size_class === "slm"),
       ),
-    [models, q, provider, openOnly],
+    [models, q, provider, openOnly, slmOnly],
   );
 
   if (!loaded) return <Spinner />;
@@ -60,6 +62,15 @@ export default function Catalog() {
           />
           Open weights only
         </label>
+        <label className="flex items-center gap-2 text-sm text-ink2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={slmOnly}
+            onChange={(e) => setSlmOnly(e.target.checked)}
+            className="accent-s1"
+          />
+          SLMs only
+        </label>
         <span className="text-xs text-muted ml-auto">{filtered.length} shown</span>
       </div>
 
@@ -71,9 +82,17 @@ export default function Catalog() {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="font-medium">{m.name}</div>
-                  <div className="text-xs text-muted">{m.provider}</div>
+                  <div className="text-xs text-muted">
+                    {m.provider}
+                    {m.params_b && <> · {m.params_b}B params</>}
+                  </div>
                 </div>
-                <SourceBadge model={m} />
+                <div className="flex flex-col items-end gap-1">
+                  <SourceBadge model={m} />
+                  {m.size_class === "slm" && (
+                    <span className="chip border-s1/50 text-s1">SLM</span>
+                  )}
+                </div>
               </div>
 
               <ScoreBar value={avg} label="quality" />
