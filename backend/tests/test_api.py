@@ -1,3 +1,7 @@
+import os
+
+os.environ["REGISTRY_OFFLINE"] = "1"  # deterministic snapshot mode in tests
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -27,6 +31,26 @@ def test_recommend_with_constraints():
     assert r["chosen_vs_suggested"]["deltas"]
     for res in r["results"]:
         assert res["reasons"] and 0 <= res["score"] <= 100
+
+
+def test_registry_connectors():
+    r = client.get("/api/registry/models").json()
+    registries = {e["registry"] for e in r["entries"]}
+    assert registries == {"huggingface", "openrouter"}
+    assert all(s["mode"] == "snapshot" for s in r["sync"])
+    # channel dedupe: known models match curated ids
+    hf_phi = next(e for e in r["entries"] if e["id"] == "hf/microsoft/phi-4")
+    assert hf_phi["matches_curated"] == "phi-4"
+    assert hf_phi["source"] == "open" and hf_phi["license"] == "mit"
+    or_sonnet = next(e for e in r["entries"] if "claude-sonnet" in e["id"])
+    assert or_sonnet["matches_curated"] == "claude-sonnet-4.5"
+    assert or_sonnet["input_price"] == 3.0  # per-1M normalization
+    # genuinely new models stay unmatched (registry-only cards)
+    kimi = next(e for e in r["entries"] if "kimi" in e["id"])
+    assert kimi["matches_curated"] is None and kimi["rated"] is False
+    # source filtering
+    only_hf = client.get("/api/registry/models?sources=huggingface").json()
+    assert {e["registry"] for e in only_hf["entries"]} == {"huggingface"}
 
 
 def test_smallest_capable_mode():

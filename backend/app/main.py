@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, clusters, deployments, evals, integration, migrate
+from . import analytics, clusters, deployments, evals, integration, migrate, registry
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
 
@@ -65,6 +65,12 @@ def get_similar(model_id: str):
 @app.get("/api/use-cases")
 def use_cases():
     return {"use_cases": USE_CASES}
+
+
+@app.get("/api/registry/models")
+def registry_models(sources: str = "huggingface,openrouter"):
+    wanted = [s.strip() for s in sources.split(",") if s.strip()]
+    return registry.get_entries(wanted)
 
 
 # ------------------------ recommendation ------------------------------
