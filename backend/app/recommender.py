@@ -6,8 +6,17 @@ product never gives a black-box answer.
 """
 import math
 
+from . import analytics
 from .catalog import (MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS,
                       blended_price, avg_quality, size_rank)
+
+
+def _effective_latency(m: dict, stats: dict) -> tuple[int, bool]:
+    """Measured latency from gateway telemetry when available (Phase 3)."""
+    t = stats.get(m["id"])
+    if t:
+        return t["avg_latency_ms"], True
+    return m["latency_ms"], False
 
 USE_CASE_DIM = {u["id"]: u["dimension"] for u in USE_CASES}
 
@@ -62,8 +71,9 @@ def recommend(use_case: str, weights: dict, constraints: dict | None = None,
     if not candidates:
         return {"results": [], "excluded": excluded, "message": "No model satisfies all constraints — relax one and retry."}
 
+    stats = analytics.model_stats()
     prices = [blended_price(m) for m in candidates]
-    lat = [m["latency_ms"] for m in candidates]
+    lat = [_effective_latency(m, stats)[0] for m in candidates]
     tps = [m["throughput_tps"] for m in candidates]
     log_lo, log_hi = math.log(min(prices)), math.log(max(prices))
 
@@ -72,7 +82,8 @@ def recommend(use_case: str, weights: dict, constraints: dict | None = None,
         quality_score = m["quality"][dim] / 100
         # log scale: the $0.10 vs $1 difference matters as much as $1 vs $10
         cost_score = 1 - _norm(math.log(blended_price(m)), log_lo, log_hi)
-        speed_score = 0.6 * (1 - _norm(m["latency_ms"], min(lat), max(lat))) \
+        eff_lat, measured = _effective_latency(m, stats)
+        speed_score = 0.6 * (1 - _norm(eff_lat, min(lat), max(lat))) \
             + 0.4 * _norm(m["throughput_tps"], min(tps), max(tps))
         total = (w_quality * quality_score + w_cost * cost_score + w_speed * speed_score) / total_w
 
@@ -85,6 +96,8 @@ def recommend(use_case: str, weights: dict, constraints: dict | None = None,
                 "speed": round(speed_score * 100, 1),
             },
             "blended_price": round(blended_price(m), 2),
+            "latency_ms": eff_lat,
+            "latency_measured": measured,
         })
 
     if mode == "smallest_capable":
@@ -139,7 +152,9 @@ def _reasons(r: dict, results: list, dim: str, rank: int) -> list[str]:
         reasons.append(f"Cheapest option — {priciest['blended_price'] / max(r['blended_price'], 0.01):.1f}x cheaper than {priciest['model']['name']}")
     else:
         reasons.append(f"Blended cost ${r['blended_price']:.2f} per 1M tokens")
-    reasons.append(f"~{m['latency_ms']} ms first token, ~{m['throughput_tps']} tok/s")
+    lat_src = "measured on your gateway" if r.get("latency_measured") else "est."
+    reasons.append(f"~{r.get('latency_ms', m['latency_ms'])} ms first token ({lat_src}), "
+                   f"~{m['throughput_tps']} tok/s")
     if m["self_hostable"]:
         reasons.append("Open weights — can run on your own OpenShift cluster (vLLM)")
     return reasons

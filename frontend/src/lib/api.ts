@@ -17,6 +17,12 @@ export interface ModelInfo {
   self_hostable: boolean;
   params_b: number | null;
   size_class: "slm" | "mid" | "large";
+  telemetry?: { samples: number; avg_latency_ms: number; avg_cost: number } | null;
+  provenance?: {
+    latency: { source: string; samples?: number };
+    price: { source: string; input_price?: number; output_price?: number };
+    quality: { source: string };
+  };
 }
 
 export interface RecommendResult {
@@ -24,6 +30,8 @@ export interface RecommendResult {
   score: number;
   breakdown: { quality: number; cost: number; speed: number };
   blended_price: number;
+  latency_ms?: number;
+  latency_measured?: boolean;
   reasons: string[];
 }
 

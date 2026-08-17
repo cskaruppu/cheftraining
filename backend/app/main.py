@@ -53,7 +53,25 @@ def list_models(q: str = "", provider: str = "", open_source: bool | None = None
         items = [m for m in items if m["provider"] == provider]
     if open_source is not None:
         items = [m for m in items if (m["source"] == "open") == open_source]
-    return {"models": items, "providers": sorted({m["provider"] for m in MODELS}),
+
+    # Phase 2/3 enrichment: every value carries provenance; telemetry
+    # (measured on this install's gateway) overrides spec estimates.
+    stats = analytics.model_stats()
+    or_prices = registry.price_provenance()
+    enriched = []
+    for m in items:
+        t = stats.get(m["id"])
+        enriched.append({
+            **m,
+            "telemetry": t,
+            "provenance": {
+                "latency": ({"source": "measured", "samples": t["samples"]}
+                            if t else {"source": "estimated"}),
+                "price": or_prices.get(m["id"], {"source": "curated-seed"}),
+                "quality": {"source": "benchmark-seed"},
+            },
+        })
+    return {"models": enriched, "providers": sorted({m["provider"] for m in MODELS}),
             "quality_dims": QUALITY_DIMS}
 
 
@@ -73,6 +91,12 @@ def use_cases():
 def registry_models(sources: str = "huggingface,openrouter"):
     wanted = [s.strip() for s in sources.split(",") if s.strip()]
     return registry.get_entries(wanted)
+
+
+@app.post("/api/registry/sync")
+def registry_sync(sources: str = "huggingface,openrouter"):
+    wanted = [s.strip() for s in sources.split(",") if s.strip()]
+    return registry.force_sync(wanted)
 
 
 # ------------------------ recommendation ------------------------------

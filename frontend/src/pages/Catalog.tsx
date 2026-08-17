@@ -175,10 +175,31 @@ export default function Catalog() {
               <ScoreBar value={avg} label="quality" />
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-ink2">
-                <div>In <span className="text-ink tabular-nums">${m.input_price.toFixed(2)}</span>/1M</div>
+                <div title={m.provenance?.price.source !== "curated-seed"
+                  ? `price via ${m.provenance?.price.source}` : "curated seed price"}>
+                  In <span className="text-ink tabular-nums">${m.input_price.toFixed(2)}</span>/1M
+                  {m.provenance?.price.source.startsWith("openrouter-live") && (
+                    <span className="text-s3" title="live price from OpenRouter"> ●</span>
+                  )}
+                </div>
                 <div>Out <span className="text-ink tabular-nums">${m.output_price.toFixed(2)}</span>/1M</div>
                 <div>Context <span className="text-ink tabular-nums">{fmtCompact(m.context_window)}</span></div>
-                <div>~<span className="text-ink tabular-nums">{m.latency_ms}</span> ms · <span className="text-ink tabular-nums">{m.throughput_tps}</span> tok/s</div>
+                <div className="flex items-center gap-1.5">
+                  <span>
+                    ~<span className="text-ink tabular-nums">{m.telemetry?.avg_latency_ms ?? m.latency_ms}</span> ms
+                    · <span className="text-ink tabular-nums">{m.throughput_tps}</span> tok/s
+                  </span>
+                  {m.telemetry ? (
+                    <span className="chip !py-0 !px-1.5 !text-[10px] border-s3/50 text-s3"
+                      title={`measured from ${m.telemetry.samples.toLocaleString()} requests on your gateway`}>
+                      measured
+                    </span>
+                  ) : (
+                    <span className="chip !py-0 !px-1.5 !text-[10px]" title="spec-sheet estimate — becomes 'measured' after 20 real requests">
+                      est.
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-1.5 mt-auto">

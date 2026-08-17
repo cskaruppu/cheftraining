@@ -35,6 +35,27 @@ def test_recommend_with_constraints():
         assert res["reasons"] and 0 <= res["score"] <= 100
 
 
+def test_telemetry_provenance_and_sync():
+    models = client.get("/api/models").json()["models"]
+    # seeded traffic gives measured telemetry to traffic-bearing models
+    mini = next(m for m in models if m["id"] == "gpt-5-mini")
+    assert mini["telemetry"]["samples"] >= 20
+    assert mini["provenance"]["latency"]["source"] == "measured"
+    # a model with no traffic stays an estimate
+    grok = next(m for m in models if m["id"] == "grok-4")
+    assert grok["telemetry"] is None
+    assert grok["provenance"]["latency"]["source"] == "estimated"
+    # recommendations surface the measured basis
+    rec = client.post("/api/recommend", json={"use_case": "chatbot"}).json()
+    assert any(r["latency_measured"] for r in rec["results"]), \
+        "seeded models should be speed-scored from measured latency"
+    assert any("measured on your gateway" in reason
+               for r in rec["results"] for reason in r["reasons"])
+    # force re-sync endpoint returns fresh sync metadata
+    s = client.post("/api/registry/sync").json()
+    assert {x["registry"] for x in s["sync"]} == {"huggingface", "openrouter"}
+
+
 def test_config_service_and_persistence():
     entries = client.get("/api/config").json()["entries"]
     keys = {e["key"] for e in entries}

@@ -8,12 +8,18 @@ appends on top. Production swaps writes to a NATS -> ClickHouse
 pipeline behind this same read API.
 """
 import random
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import desc, func, insert, select
 
 from .catalog import MODELS_BY_ID
 from .db import engine, events_t
+
+# Telemetry a model needs before "measured" replaces "estimated".
+MIN_SAMPLES = 20
+_STATS_TTL = 60
+_stats_cache: dict = {"at": 0.0, "data": {}}
 
 _SEED_MODELS = ["gpt-5-mini", "claude-sonnet-4.5", "gemini-2.5-flash",
                 "llama-4-maverick", "deepseek-v3.2", "claude-haiku-4.5"]
@@ -74,6 +80,36 @@ def seed():
             ))
     with engine.begin() as conn:
         conn.execute(insert(events_t), rows)
+
+
+def model_stats() -> dict:
+    """Observed per-model telemetry from real gateway traffic.
+
+    This is the Phase-3 feedback loop: the catalog's latency values and
+    the recommender's speed scoring switch from spec-sheet estimates to
+    measured numbers once a model has MIN_SAMPLES real requests.
+    Cached briefly to keep catalog reads cheap.
+    """
+    if time.time() - _stats_cache["at"] < _STATS_TTL:
+        return _stats_cache["data"]
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(events_t.c.model_id,
+                   func.count().label("samples"),
+                   func.avg(events_t.c.latency_ms).label("avg_latency_ms"),
+                   func.avg(events_t.c.cost).label("avg_cost"))
+            .where(events_t.c.cached.is_(False))
+            .group_by(events_t.c.model_id))
+        data = {
+            r.model_id: {
+                "samples": r.samples,
+                "avg_latency_ms": int(r.avg_latency_ms or 0),
+                "avg_cost": round(r.avg_cost or 0, 6),
+            }
+            for r in rows if r.samples >= MIN_SAMPLES
+        }
+    _stats_cache.update(at=time.time(), data=data)
+    return data
 
 
 def summary() -> dict:

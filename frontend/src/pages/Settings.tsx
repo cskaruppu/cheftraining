@@ -145,7 +145,19 @@ export default function Settings() {
           </div>
 
           <div className="card">
-            <h2 className="text-sm font-medium mb-3">Data sources</h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-medium">Data sources</h2>
+              <button
+                className="btn-ghost !py-1 !px-3 !text-xs"
+                onClick={async () => {
+                  const r = await fetch("/api/registry/sync", { method: "POST" });
+                  const d = await r.json();
+                  setSync(d.sync);
+                }}
+              >
+                Sync now
+              </button>
+            </div>
             <div className="space-y-2">
               {sync.map((s) => (
                 <div key={s.registry}

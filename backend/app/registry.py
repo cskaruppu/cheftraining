@@ -199,3 +199,30 @@ def get_entries(sources: list[str]) -> dict:
         })
     curated_ids = {m["id"] for m in MODELS}
     return {"entries": entries, "sync": sync, "curated_count": len(curated_ids)}
+
+
+def force_sync(sources: list[str]) -> dict:
+    for source in sources:
+        _CACHE.pop(source, None)
+    return get_entries(sources)
+
+
+def price_provenance() -> dict:
+    """curated model id -> live/snapshot OpenRouter price info (if matched).
+
+    Uses only what's already cached — never triggers a sync on the hot
+    catalog path.
+    """
+    cached = _CACHE.get("openrouter")
+    if not cached:
+        return {}
+    out = {}
+    for e in cached["entries"]:
+        cid = e.get("matches_curated")
+        if cid and e.get("input_price") is not None:
+            out[cid] = {
+                "source": f"openrouter-{cached['mode']}",
+                "input_price": e["input_price"],
+                "output_price": e["output_price"],
+            }
+    return out

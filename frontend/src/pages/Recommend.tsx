@@ -221,6 +221,12 @@ export default function Recommend() {
                       {r.model.size_class === "slm" && (
                         <span className="chip border-s3/50 text-s3">SLM</span>
                       )}
+                      {r.latency_measured && (
+                        <span className="chip border-s3/50 text-s3"
+                          title="speed scored from latency measured on your gateway, not spec sheets">
+                          measured
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-muted">
                       {r.model.provider}
