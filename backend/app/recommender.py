@@ -162,9 +162,12 @@ def _compare_chosen(chosen_id: str, results: list, dim: str) -> dict:
     dl = chosen["latency_ms"] - suggested["latency_ms"]
     if dl > 0:
         deltas.append(f"{dl} ms faster first token")
-    monthly_chosen = cp * 50  # demo assumption: 50M tokens/month
-    monthly_sugg = sp * 50
-    deltas.append(f"Projected monthly cost at 50M tokens: ${monthly_sugg:,.0f} vs ${monthly_chosen:,.0f}")
+    from . import config  # late import to avoid a cycle at module load
+    volume = config.get("assumed_monthly_m_tokens")
+    monthly_chosen = cp * volume
+    monthly_sugg = sp * volume
+    deltas.append(f"Projected monthly cost at {volume:.0f}M tokens: "
+                  f"${monthly_sugg:,.0f} vs ${monthly_chosen:,.0f}")
     return {"chosen": chosen, "suggested": suggested, "deltas": deltas,
             "same": chosen["id"] == suggested["id"]}
 

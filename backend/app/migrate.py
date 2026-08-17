@@ -12,12 +12,12 @@ utilization telemetry.
 """
 import math
 
+from . import config
 from .catalog import MODELS, MODELS_BY_ID, blended_price
 from .deployments import serving_profiles
 from .recommender import USE_CASE_DIM
 
 _SECONDS_PER_MONTH = 30 * 24 * 3600
-_UTILIZATION = 0.5
 
 
 def migrate_plan(cloud_model_id: str, monthly_m_tokens: float, use_case: str) -> dict:
@@ -36,7 +36,8 @@ def migrate_plan(cloud_model_id: str, monthly_m_tokens: float, use_case: str) ->
             continue
         profiles = serving_profiles(m["id"])
         profile = next((p for p in profiles if p["recommended"]), profiles[0])
-        capacity_m = profile["est_throughput_tps"] * _SECONDS_PER_MONTH * _UTILIZATION / 1e6
+        utilization = config.get("gpu_utilization_target")
+        capacity_m = profile["est_throughput_tps"] * _SECONDS_PER_MONTH * utilization / 1e6
         replicas = max(1, math.ceil(monthly_m_tokens / capacity_m))
         local_monthly = profile["est_cost_month"] * replicas
         quality_delta = m["quality"][dim] - cloud["quality"][dim]

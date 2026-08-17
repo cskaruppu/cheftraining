@@ -1,6 +1,8 @@
 import os
+import tempfile
 
 os.environ["REGISTRY_OFFLINE"] = "1"  # deterministic snapshot mode in tests
+os.environ["MODELECT_DATA_DIR"] = tempfile.mkdtemp()  # fresh DB per run
 
 from fastapi.testclient import TestClient
 
@@ -31,6 +33,36 @@ def test_recommend_with_constraints():
     assert r["chosen_vs_suggested"]["deltas"]
     for res in r["results"]:
         assert res["reasons"] and 0 <= res["score"] <= 100
+
+
+def test_config_service_and_persistence():
+    entries = client.get("/api/config").json()["entries"]
+    keys = {e["key"] for e in entries}
+    assert {"gpu_utilization_target", "assumed_monthly_m_tokens",
+            "default_quality_floor", "cache_ttl_hours"} <= keys
+
+    # update flows through to the engines that read it
+    r = client.put("/api/config", json={
+        "values": {"assumed_monthly_m_tokens": 120}}).json()
+    assert r["updated"] == [{"key": "assumed_monthly_m_tokens", "value": 120}]
+    rec = client.post("/api/recommend", json={
+        "use_case": "coding", "chosen_id": "gpt-5.1",
+        "constraints": {"open_source_only": True}}).json()
+    assert any("120M tokens" in d for d in rec["chosen_vs_suggested"]["deltas"])
+
+    # validation: out-of-range and unknown keys rejected
+    assert client.put("/api/config", json={
+        "values": {"gpu_utilization_target": 5}}).status_code == 400
+    assert client.put("/api/config", json={
+        "values": {"nope": 1}}).status_code == 400
+
+    # system endpoint reports the persistent store
+    sysinfo = client.get("/api/system").json()
+    assert sysinfo["db_backend"] == "sqlite"
+    assert sysinfo["analytics_events"] > 0
+
+    # restore default for other tests
+    client.put("/api/config", json={"values": {"assumed_monthly_m_tokens": 50}})
 
 
 def test_registry_connectors():

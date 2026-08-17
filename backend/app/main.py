@@ -19,7 +19,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, clusters, deployments, evals, integration, migrate, registry
+from . import (analytics, clusters, config, deployments, evals, integration,
+               migrate, registry)
+from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
 
@@ -267,6 +269,40 @@ def delete_deployment(dep_id: str):
 @app.get("/api/analytics/summary")
 def analytics_summary():
     return analytics.summary()
+
+
+# ------------------------ config & system ------------------------------
+
+@app.get("/api/config")
+def get_config():
+    return {"entries": config.all_entries()}
+
+
+class ConfigUpdate(BaseModel):
+    values: dict[str, float]
+
+
+@app.put("/api/config")
+def put_config(req: ConfigUpdate):
+    updated = []
+    try:
+        for key, value in req.values.items():
+            updated.append(config.set_value(key, value))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"updated": updated}
+
+
+@app.get("/api/system")
+def system_info():
+    with_counts = analytics.summary()["kpis"]
+    return {
+        "db_backend": backend_name(),
+        "data_dir": DATA_DIR,
+        "analytics_events": with_counts["requests_total"],
+        "deployments": len(deployments.list_all()),
+        "version": app.version,
+    }
 
 
 # ---------------- OpenAI-compatible demo gateway ----------------------

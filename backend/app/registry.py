@@ -18,8 +18,12 @@ import httpx
 
 from .catalog import MODELS
 
-SYNC_TTL = 6 * 3600
 _CACHE: dict[str, dict] = {}
+
+
+def _sync_ttl() -> float:
+    from . import config  # late import to avoid a cycle at module load
+    return config.get("cache_ttl_hours") * 3600
 
 # fragments of registry model names -> curated model id (channel dedupe)
 _CURATED_MATCH = {
@@ -182,7 +186,7 @@ def get_entries(sources: list[str]) -> dict:
         if not adapter:
             continue
         cached = _CACHE.get(source)
-        if cached and time.time() - cached["at"] < SYNC_TTL:
+        if cached and time.time() - cached["at"] < _sync_ttl():
             data, mode, at = cached["entries"], cached["mode"], cached["at"]
         else:
             data, mode = adapter()

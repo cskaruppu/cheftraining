@@ -1,17 +1,21 @@
-"""Deployment manager — Phase 1 (simulated provisioning).
+"""Deployment manager — persisted, VM-style provisioning (simulated).
 
-VM-style self-service: pick a self-hostable model, pick a serving
-profile (GPU + quantization sizing), deploy, get an endpoint + API key.
-This demo simulates the provisioning lifecycle in-memory; production
-swaps the simulation for a KServe/vLLM InferenceService created on the
-cluster — the API contract stays identical.
+Deployment records live in the database, so they survive pod restarts;
+GPU allocations on the fleet are re-derived from stored deployments at
+boot. The provisioning lifecycle is still simulated; production swaps
+the simulation for KServe/vLLM InferenceServices behind the same API.
 """
+import json
 import secrets
 import time
 import uuid
 
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import insert, select
+
 from . import clusters
 from .catalog import MODELS_BY_ID
+from .db import deployments_t, engine
 
 # Rough deployment size classes for the self-hostable catalog entries.
 _SIZE_CLASS = {
@@ -25,7 +29,6 @@ _SIZE_CLASS = {
     "deepseek-r1": "xl",
 }
 
-# Per class: (profile id, GPUs, quantization, $/hr, throughput multiplier)
 _PROFILE_TEMPLATES = {
     "small": [
         ("econ", "1x NVIDIA L4 24GB", "INT8", 0.60, 0.8, False),
@@ -46,11 +49,8 @@ _PROFILE_TEMPLATES = {
     ],
 }
 
-# Provisioning stages: (status, duration seconds) — then "ready".
 _STAGES = [("scheduling", 4), ("pulling_weights", 6), ("warming_up", 6)]
 _TOTAL = sum(d for _, d in _STAGES)
-
-_DEPLOYMENTS: dict[str, dict] = {}
 
 
 def serving_profiles(model_id: str) -> list[dict]:
@@ -93,23 +93,24 @@ def create(model_id: str, profile_id: str, name: str,
         raise ValueError(f"cluster '{cluster_id}' lacks free GPUs for this profile")
 
     dep_id = uuid.uuid4().hex[:10]
-    dep = {
+    row = {
         "id": dep_id,
         "name": name or f"{model_id}-{dep_id[:4]}",
         "model_id": model_id,
         "model_name": model["name"],
-        "profile": profile,
+        "profile_json": json.dumps(profile),
         "cluster_id": cluster_id,
         "cluster_name": clusters.CLUSTERS_BY_ID[cluster_id]["name"],
         "api_key": f"mk-{secrets.token_hex(16)}",
         "created_at": time.time(),
     }
-    _DEPLOYMENTS[dep_id] = dep
-    return _public(dep)
+    with engine.begin() as conn:
+        conn.execute(insert(deployments_t).values(**row))
+    return _public(row)
 
 
-def _status(dep: dict) -> tuple[str, int]:
-    elapsed = time.time() - dep["created_at"]
+def _status(created_at: float) -> tuple[str, int]:
+    elapsed = time.time() - created_at
     progress = min(100, int(elapsed / _TOTAL * 100))
     t = 0.0
     for status, duration in _STAGES:
@@ -119,29 +120,45 @@ def _status(dep: dict) -> tuple[str, int]:
     return "ready", 100
 
 
-def _public(dep: dict) -> dict:
-    status, progress = _status(dep)
+def _public(row) -> dict:
+    r = dict(row) if not isinstance(row, dict) else row
+    status, progress = _status(r["created_at"])
     return {
-        "id": dep["id"], "name": dep["name"],
-        "model_id": dep["model_id"], "model_name": dep["model_name"],
-        "profile": dep["profile"], "api_key": dep["api_key"],
-        "cluster_id": dep.get("cluster_id"), "cluster_name": dep.get("cluster_name"),
+        "id": r["id"], "name": r["name"],
+        "model_id": r["model_id"], "model_name": r["model_name"],
+        "profile": json.loads(r["profile_json"]),
+        "api_key": r["api_key"],
+        "cluster_id": r["cluster_id"], "cluster_name": r["cluster_name"],
         "status": status, "progress": progress,
-        # In production this is the per-deployment KServe endpoint; in the
-        # demo every deployment is served by the built-in gateway.
         "endpoint_path": "/v1/chat/completions",
     }
 
 
 def list_all() -> list[dict]:
-    return sorted((_public(d) for d in _DEPLOYMENTS.values()),
-                  key=lambda d: d["name"])
+    with engine.connect() as conn:
+        rows = conn.execute(select(deployments_t)).mappings().all()
+    return sorted((_public(r) for r in rows), key=lambda d: d["name"])
 
 
 def delete(dep_id: str) -> bool:
-    dep = _DEPLOYMENTS.pop(dep_id, None)
-    if dep is None:
-        return False
-    if dep.get("cluster_id"):
-        clusters.release(dep["cluster_id"], dep["profile"]["gpus"])
+    with engine.begin() as conn:
+        row = conn.execute(select(deployments_t)
+                           .where(deployments_t.c.id == dep_id)).mappings().first()
+        if row is None:
+            return False
+        conn.execute(sa_delete(deployments_t).where(deployments_t.c.id == dep_id))
+    profile = json.loads(row["profile_json"])
+    clusters.release(row["cluster_id"], profile["gpus"])
     return True
+
+
+def restore_allocations():
+    """Re-derive fleet GPU allocations from persisted deployments (boot)."""
+    with engine.connect() as conn:
+        rows = conn.execute(select(deployments_t)).mappings().all()
+    for r in rows:
+        profile = json.loads(r["profile_json"])
+        clusters.allocate(r["cluster_id"], profile["gpus"])
+
+
+restore_allocations()
