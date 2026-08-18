@@ -358,6 +358,7 @@ def system_info():
         "data_dir": DATA_DIR,
         "analytics_events": with_counts["requests_total"],
         "deployments": len(deployments.list_all()),
+        "demo_seed": analytics.demo_seed_enabled(),
         "version": app.version,
     }
 

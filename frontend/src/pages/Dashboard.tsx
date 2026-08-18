@@ -15,10 +15,22 @@ import { PageHeader, Spinner, StatTile, tooltipStyle } from "../components/ui";
 
 export default function Dashboard() {
   const [data, setData] = useState<AnalyticsSummary | null>(null);
+  const [demoSeed, setDemoSeed] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    api.analytics().then(setData).catch((e) => setErr(String(e)));
+    const refresh = () =>
+      api.analytics()
+        .then((d) => {
+          setData(d);
+          setUpdatedAt(new Date());
+        })
+        .catch((e) => setErr(String(e)));
+    refresh();
+    fetch("/api/system").then((r) => r.json()).then((s) => setDemoSeed(s.demo_seed)).catch(() => {});
+    const t = setInterval(refresh, 10_000);
+    return () => clearInterval(t);
   }, []);
 
   if (err) return <div className="text-crit text-sm">API error: {err}</div>;
@@ -30,10 +42,18 @@ export default function Dashboard() {
 
   return (
     <div>
-      <PageHeader
-        title="Dashboard"
-        sub="Live traffic, spend and latency observed through the gateway (seeded demo data)"
-      />
+      <div className="flex items-start justify-between gap-4">
+        <PageHeader
+          title="Dashboard"
+          sub={demoSeed
+            ? "Live traffic, spend and latency observed through the gateway — real events plus seeded demo history"
+            : "Live traffic, spend and latency observed through the gateway — real traffic only"}
+        />
+        <span className="chip !text-[11px] mt-1 shrink-0" title="the page re-queries the event store every 10 seconds">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-good mr-1.5 animate-pulse" />
+          live · {updatedAt ? updatedAt.toLocaleTimeString() : "…"}
+        </span>
+      </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatTile label="Requests · 24h" value={fmtCompact(kpis.requests_24h)} hint={`${fmtCompact(kpis.requests_total)} total (14d)`} />

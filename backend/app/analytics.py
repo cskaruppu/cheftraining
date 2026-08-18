@@ -7,6 +7,7 @@ the dashboard has data immediately; live gateway/playground traffic
 appends on top. Production swaps writes to a NATS -> ClickHouse
 pipeline behind this same read API.
 """
+import os
 import random
 import time
 from datetime import datetime, timedelta, timezone
@@ -55,7 +56,15 @@ def record(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
         conn.execute(insert(events_t).values(**row))
 
 
+def demo_seed_enabled() -> bool:
+    """DEMO_SEED=0 runs the platform with real traffic only — every
+    number starts at zero and grows from actual gateway usage."""
+    return os.environ.get("DEMO_SEED", "1") != "0"
+
+
 def seed():
+    if not demo_seed_enabled():
+        return
     with engine.connect() as conn:
         count = conn.execute(select(func.count()).select_from(events_t)).scalar()
     if count:

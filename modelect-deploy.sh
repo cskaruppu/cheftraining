@@ -76,14 +76,22 @@ manifests() {
   # Storage mode: PostgreSQL (env from secret) or SQLite on a PVC.
   # Recreate strategy: the data PVC is RWO, and SQLite must never have
   # two writers — a rolling update would try both.
+  ENV_ITEMS=""
+  if [[ -n "${DEMO_SEED:-}" ]]; then
+    ENV_ITEMS="{name: DEMO_SEED, value: \"${DEMO_SEED}\"}"
+  fi
   if [[ "${WITH_POSTGRES:-0}" == "1" ]]; then
-    API_ENV='env: [{name: DATABASE_URL, valueFrom: {secretKeyRef: {name: modelect-db, key: database-url}}}]'
+    ENV_ITEMS="${ENV_ITEMS:+${ENV_ITEMS}, }{name: DATABASE_URL, valueFrom: {secretKeyRef: {name: modelect-db, key: database-url}}}"
     API_VOLUMES=""
     API_MOUNTS=""
   else
-    API_ENV=""
     API_VOLUMES='volumes: [{name: data, persistentVolumeClaim: {claimName: modelect-data}}]'
     API_MOUNTS='volumeMounts: [{name: data, mountPath: /opt/app/data}]'
+    :
+  fi
+  API_ENV_LINE=""
+  [[ -n "$ENV_ITEMS" ]] && API_ENV_LINE="env: [${ENV_ITEMS}]"
+  if [[ "${WITH_POSTGRES:-0}" != "1" ]]; then
     cat <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -118,7 +126,7 @@ spec:
         - name: api
           image: ${API_IMAGE}
           ports: [{containerPort: 8000}]
-          ${API_ENV}
+          ${API_ENV_LINE}
           ${API_MOUNTS}
           resources:
             requests: {cpu: 100m, memory: 128Mi}

@@ -52,12 +52,25 @@ def _cutoff_30d() -> str:
     return (_now() - timedelta(days=30)).isoformat()
 
 
+# fixed budgets for real-traffic mode (DEMO_SEED=0) — no spend history
+_REAL_MODE_BUDGETS = {"support-bot": 500.0, "doc-pipeline": 400.0,
+                      "research-agents": 500.0, "intern-sandbox": 50.0}
+
+
 def seed():
-    """Idempotent: create demo teams, backfill attribution, seed one
-    anomaly burst + its enforcement log entry."""
+    """Idempotent: create teams; in demo mode also backfill attribution
+    and seed one anomaly burst + its enforcement log entry."""
     analytics.seed()  # base traffic must exist before attribution/backfill
+    demo = analytics.demo_seed_enabled()
     with engine.begin() as conn:
         if conn.execute(select(func.count()).select_from(teams_t)).scalar():
+            return
+        if not demo:
+            for team_id, name, policy, _mult, extra in _TEAM_SEED:
+                conn.execute(insert(teams_t).values(
+                    id=team_id, name=name, policy=policy,
+                    budget_usd=_REAL_MODE_BUDGETS[team_id],
+                    api_key=f"tk-{secrets.token_hex(12)}", enabled=True, **extra))
             return
         # 1. backfill team attribution onto existing events by model
         for model_id, team_id in _MODEL_TEAM.items():
