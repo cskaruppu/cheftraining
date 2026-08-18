@@ -12,15 +12,16 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import (analytics, clusters, config, deployments, evals, integration,
-               migrate, registry, tokenomics)
+from . import (analytics, auth, clusters, config, deployments, evals,
+               integration, migrate, registry, tokenomics)
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
@@ -35,10 +36,69 @@ app.add_middleware(
 
 analytics.seed()
 
+# Paths that never require a portal session: health, the OpenAI-compatible
+# gateway (team API keys are its auth), login, and the static UI.
+_SESSION_EXEMPT = ("/healthz", "/v1/", "/api/auth/")
+
+
+@app.middleware("http")
+async def _session_gate(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and not any(path.startswith(p) for p in _SESSION_EXEMPT):
+        try:
+            request.state.user = auth.authorize(request)
+        except HTTPException as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+    return await call_next(request)
+
 
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+
+# ----------------------------- auth ------------------------------------
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest, response: Response):
+    user = auth.login(req.username, req.password)
+    if user is None:
+        raise HTTPException(401, "invalid username or password")
+    response.set_cookie(auth.COOKIE_NAME, auth.issue_token(user),
+                        max_age=auth.SESSION_TTL, httponly=True,
+                        samesite="lax", path="/")
+    return user
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    user = auth.session_user(request)
+    if user is None:
+        raise HTTPException(401, "not authenticated")
+    return {**user, "demo_seed": analytics.demo_seed_enabled()}
+
+
+@app.get("/api/me/team")
+def my_team(request: Request):
+    user = request.state.user
+    team_id = user["team_id"]
+    if user["role"] == "admin" or not team_id:
+        raise HTTPException(400, "admin accounts are not bound to a team — see Tokenomics")
+    team = next((t for t in tokenomics.overview()["teams"] if t["id"] == team_id), None)
+    if team is None:
+        raise HTTPException(404, "team not found")
+    return team
 
 
 # --------------------------- catalog ---------------------------------

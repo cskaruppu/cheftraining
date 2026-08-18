@@ -12,6 +12,8 @@ import Integrate from "./pages/Integrate";
 import Clusters from "./pages/Clusters";
 import Settings from "./pages/Settings";
 import Tokenomics from "./pages/Tokenomics";
+import Login from "./pages/Login";
+import MyUsage from "./pages/MyUsage";
 
 function Icon({ children }: { children: ReactNode }) {
   return (
@@ -98,6 +100,12 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M12 18V6" />
     </Icon>
   ),
+  usage: (
+    <Icon>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21c0-4 3.6-6 8-6s8 2 8 6" />
+    </Icon>
+  ),
   settings: (
     <Icon>
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
@@ -106,7 +114,33 @@ const ICONS: Record<string, ReactNode> = {
   ),
 };
 
-const GROUPS: { label: string; items: { to: string; label: string; icon: string }[] }[] = [
+type NavGroup = { label: string; items: { to: string; label: string; icon: string }[] };
+
+const DECIDE: NavGroup = {
+  label: "Decide",
+  items: [
+    { to: "/models", label: "Model Catalog", icon: "catalog" },
+    { to: "/recommend", label: "Recommend", icon: "recommend" },
+    { to: "/evals", label: "Evals", icon: "evals" },
+    { to: "/compare", label: "Compare", icon: "compare" },
+  ],
+};
+const DEPLOY: NavGroup = {
+  label: "Deploy",
+  items: [
+    { to: "/migrate", label: "Migrate from Cloud", icon: "migrate" },
+    { to: "/deploy", label: "Deployments", icon: "deploy" },
+  ],
+};
+const INTEGRATE: NavGroup = {
+  label: "Integrate",
+  items: [
+    { to: "/integrate", label: "Integrate & Verify", icon: "integrate" },
+    { to: "/playground", label: "Playground", icon: "playground" },
+  ],
+};
+
+const ADMIN_GROUPS: NavGroup[] = [
   {
     label: "Overview",
     items: [
@@ -114,29 +148,7 @@ const GROUPS: { label: string; items: { to: string; label: string; icon: string 
       { to: "/clusters", label: "GPU Fleet", icon: "fleet" },
     ],
   },
-  {
-    label: "Decide",
-    items: [
-      { to: "/models", label: "Model Catalog", icon: "catalog" },
-      { to: "/recommend", label: "Recommend", icon: "recommend" },
-      { to: "/evals", label: "Evals", icon: "evals" },
-      { to: "/compare", label: "Compare", icon: "compare" },
-    ],
-  },
-  {
-    label: "Deploy",
-    items: [
-      { to: "/migrate", label: "Migrate from Cloud", icon: "migrate" },
-      { to: "/deploy", label: "Deployments", icon: "deploy" },
-    ],
-  },
-  {
-    label: "Integrate",
-    items: [
-      { to: "/integrate", label: "Integrate & Verify", icon: "integrate" },
-      { to: "/playground", label: "Playground", icon: "playground" },
-    ],
-  },
+  DECIDE, DEPLOY, INTEGRATE,
   {
     label: "Govern",
     items: [
@@ -145,6 +157,19 @@ const GROUPS: { label: string; items: { to: string; label: string; icon: string 
     ],
   },
 ];
+
+const USER_GROUPS: NavGroup[] = [
+  DECIDE, DEPLOY, INTEGRATE,
+  { label: "Govern", items: [{ to: "/usage", label: "My Usage", icon: "usage" }] },
+];
+
+const GROUPS = ADMIN_GROUPS; // superset, used for open-state defaults
+
+interface Me {
+  username: string;
+  role: "admin" | "user";
+  team_id: string | null;
+}
 
 const STORAGE_KEY = "modelect.nav.open";
 
@@ -161,6 +186,17 @@ function loadOpenState(): Record<string, boolean> {
 export default function App() {
   const location = useLocation();
   const [open, setOpen] = useState<Record<string, boolean>>(loadOpenState);
+  const [me, setMe] = useState<Me | null | "loading">("loading");
+
+  const loadMe = () =>
+    fetch("/api/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setMe)
+      .catch(() => setMe(null));
+
+  useEffect(() => {
+    loadMe();
+  }, []);
 
   // the group holding the current page always opens, so the active
   // item can never be hidden behind a collapsed section
@@ -171,6 +207,29 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname]);
+
+  if (me === "loading") {
+    return <div className="min-h-screen bg-page" />;
+  }
+  if (me === null) {
+    return <Login onLogin={loadMe} />;
+  }
+
+  const isAdmin = me.role === "admin";
+  const groups = isAdmin ? ADMIN_GROUPS : USER_GROUPS;
+  const home = isAdmin ? "/dashboard" : "/models";
+
+  const AdminOnly = ({ children }: { children: ReactNode }) =>
+    isAdmin ? <>{children}</> : (
+      <div className="card text-sm text-muted max-w-md">
+        This area requires an administrator account.
+      </div>
+    );
+
+  const logout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setMe(null);
+  };
 
   const toggle = (label: string) =>
     setOpen((o) => {
@@ -201,7 +260,7 @@ export default function App() {
         </div>
 
         <nav className="flex-1 px-3 pb-4 overflow-y-auto">
-          {GROUPS.map((g) => {
+          {groups.map((g) => {
             const isOpen = !!open[g.label];
             return (
               <div key={g.label} className="mt-3 first:mt-1">
@@ -253,19 +312,32 @@ export default function App() {
           })}
         </nav>
 
-        <div className="px-5 py-4 border-t border-edge flex items-center justify-between">
-          <span className="text-[11px] text-muted">
-            Gateway <code className="text-ink2">/v1</code>
-          </span>
-          <span className="chip !text-[10px]">demo · v1.2</span>
+        <div className="px-5 py-4 border-t border-edge">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[12px] text-ink2">
+              {me.username}
+              <span className="text-muted">
+                {" · "}{isAdmin ? "admin" : me.team_id === me.username ? "user" : me.team_id}
+              </span>
+            </span>
+            <button onClick={logout} className="text-[11px] text-muted hover:text-ink transition-colors">
+              sign out
+            </button>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted">
+              Gateway <code className="text-ink2">/v1</code>
+            </span>
+            <span className="chip !text-[10px]">demo · v1.5</span>
+          </div>
         </div>
       </aside>
 
       <main className="flex-1 px-8 py-7 max-w-[1240px]">
         <Routes>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/clusters" element={<Clusters />} />
+          <Route path="/" element={<Navigate to={home} replace />} />
+          <Route path="/dashboard" element={<AdminOnly><Dashboard /></AdminOnly>} />
+          <Route path="/clusters" element={<AdminOnly><Clusters /></AdminOnly>} />
           <Route path="/models" element={<Catalog />} />
           <Route path="/recommend" element={<Recommend />} />
           <Route path="/evals" element={<Evals />} />
@@ -274,8 +346,9 @@ export default function App() {
           <Route path="/integrate" element={<Integrate />} />
           <Route path="/compare" element={<Compare />} />
           <Route path="/playground" element={<Playground />} />
-          <Route path="/tokenomics" element={<Tokenomics />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/usage" element={<MyUsage />} />
+          <Route path="/tokenomics" element={<AdminOnly><Tokenomics /></AdminOnly>} />
+          <Route path="/settings" element={<AdminOnly><Settings /></AdminOnly>} />
         </Routes>
       </main>
     </div>

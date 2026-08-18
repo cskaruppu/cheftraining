@@ -66,6 +66,15 @@ teams_t = Table(
     Column("allowed_tiers", String(40), nullable=True),  # e.g. "slm,mid"
 )
 
+users_t = Table(
+    "users", metadata,
+    Column("username", String(80), primary_key=True),
+    Column("password_hash", String(200)),
+    Column("salt", String(64)),
+    Column("role", String(20)),          # "admin" | "user"
+    Column("team_id", String(40), nullable=True),
+)
+
 enforcement_t = Table(
     "enforcement_log", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),

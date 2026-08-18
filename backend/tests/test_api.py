@@ -8,7 +8,42 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
+# admin session for the whole suite (cookies persist on the client)
 client = TestClient(app)
+assert client.post("/api/auth/login", json={
+    "username": "admin", "password": "modelect-admin"}).status_code == 200
+
+
+def _user_client(team: str) -> TestClient:
+    c = TestClient(app)
+    r = c.post("/api/auth/login", json={"username": team, "password": "modelect-user"})
+    assert r.status_code == 200
+    return c
+
+
+def test_auth_sessions_and_roles():
+    # no session -> 401 on portal APIs; gateway + health stay open
+    anon = TestClient(app)
+    assert anon.get("/api/models").status_code == 401
+    assert anon.get("/healthz").status_code == 200
+    assert anon.post("/v1/chat/completions", json={
+        "model": "auto", "messages": [{"role": "user", "content": "hi"}]}).status_code == 200
+    # bad password rejected
+    assert anon.post("/api/auth/login", json={
+        "username": "admin", "password": "wrong"}).status_code == 401
+    # team user: can decide/deploy surfaces, cannot admin surfaces
+    u = _user_client("support-bot")
+    assert u.get("/api/models").status_code == 200
+    assert u.get("/api/tokenomics").status_code == 403
+    assert u.put("/api/config", json={"values": {"default_quality_floor": 80}}).status_code == 403
+    assert u.put("/api/teams/support-bot", json={"enabled": True}).status_code == 403
+    # own-team view works and exposes only their team
+    mine = u.get("/api/me/team").json()
+    assert mine["id"] == "support-bot" and mine["api_key"].startswith("tk-")
+    # admin retains full access
+    assert client.get("/api/tokenomics").status_code == 200
+    me = client.get("/api/auth/me").json()
+    assert me["role"] == "admin"
 
 
 def test_healthz():
