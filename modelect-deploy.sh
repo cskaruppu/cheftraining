@@ -6,8 +6,13 @@
 #  rollout and prints the dashboard URL.
 #
 #  Usage:
-#    ./modelect-deploy.sh <quay-namespace> [tag]          deploy (default)
+#    ./modelect-deploy.sh <quay-namespace> [tag]          deploy (default: latest)
 #    ./modelect-deploy.sh <quay-namespace> [tag] undeploy remove everything
+#
+#  Re-running the script with the SAME tag always rolls out the newest image:
+#  containers use imagePullPolicy Always, and on redeploys the script issues a
+#  'rollout restart' so pods re-pull even when the manifests are unchanged.
+#  No tag bumping needed — build, push, restart, done.
 #
 #  The script is fully standalone: if it is NOT running inside a clone of
 #  the repo, it clones it first (REPO_URL/REPO_BRANCH below) — so you can
@@ -42,7 +47,7 @@ if [[ -z "$NS" ]]; then
   echo "Usage: $0 <quay-namespace> [tag] [undeploy]" >&2
   exit 1
 fi
-TAG="${2:-$(git rev-parse --short HEAD 2>/dev/null || echo latest)}"
+TAG="${2:-latest}"
 ACTION="${3:-deploy}"
 NAMESPACE="${NAMESPACE:-llm-orchestrator}"
 REGISTRY="quay.io"
@@ -125,6 +130,7 @@ spec:
       containers:
         - name: api
           image: ${API_IMAGE}
+          imagePullPolicy: Always
           ports: [{containerPort: 8000}]
           ${API_ENV_LINE}
           ${API_MOUNTS}
@@ -164,6 +170,7 @@ spec:
       containers:
         - name: ui
           image: ${UI_IMAGE}
+          imagePullPolicy: Always
           ports: [{containerPort: 8080}]
           resources:
             requests: {cpu: 50m, memory: 64Mi}
@@ -376,8 +383,21 @@ EOF
   "$CLI" -n "$NAMESPACE" rollout status deployment/modelect-postgres --timeout=300s
 fi
 
+# Same-tag redeploys: 'apply' with an unchanged spec triggers no rollout, so
+# note which deployments already exist and restart them after apply — with
+# imagePullPolicy Always the new pods re-pull the freshly pushed image.
+API_EXISTS=0; UI_EXISTS=0
+"$CLI" -n "$NAMESPACE" get deployment/orchestrator-api >/dev/null 2>&1 && API_EXISTS=1
+"$CLI" -n "$NAMESPACE" get deployment/orchestrator-ui  >/dev/null 2>&1 && UI_EXISTS=1
+
 log "Applying manifests"
 manifests | "$CLI" -n "$NAMESPACE" apply -f -
+
+if [[ "$API_EXISTS" == "1" || "$UI_EXISTS" == "1" ]]; then
+  log "Restarting existing deployments to pull the newest '$TAG' image"
+  [[ "$API_EXISTS" == "1" ]] && "$CLI" -n "$NAMESPACE" rollout restart deployment/orchestrator-api
+  [[ "$UI_EXISTS" == "1" ]] && "$CLI" -n "$NAMESPACE" rollout restart deployment/orchestrator-ui
+fi
 
 log "Waiting for rollouts"
 "$CLI" -n "$NAMESPACE" rollout status deployment/orchestrator-api --timeout=300s

@@ -62,23 +62,31 @@ podman login quay.io                      # once
 # Option A: from anywhere — grab just the script; it clones the source
 curl -fsSLO https://raw.githubusercontent.com/cskaruppu/cheftraining/claude/multi-llm-orchestrator-research-eb6w9j/modelect-deploy.sh
 chmod +x modelect-deploy.sh
-./modelect-deploy.sh <your-quay-user> v0.2.0
+./modelect-deploy.sh <your-quay-user>
 # (private repo? set REPO_URL to an authenticated URL or run from a clone)
 
 # Option B: from a clone of this repo — OpenShift auto-detected:
-./modelect-deploy.sh <your-quay-user> v0.2.0
+./modelect-deploy.sh <your-quay-user>
 
 # Vanilla Kubernetes (EKS/AKS/GKE/…):
-INGRESS_HOST=modelect.example.com ./modelect-deploy.sh <your-quay-user> v0.2.0
+INGRESS_HOST=modelect.example.com ./modelect-deploy.sh <your-quay-user>
 
 # Redeploy without rebuilding / remove everything / preview manifests:
-SKIP_BUILD=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
-./modelect-deploy.sh <your-quay-user> v0.2.0 undeploy
-DRY_RUN=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
+SKIP_BUILD=1 ./modelect-deploy.sh <your-quay-user>
+./modelect-deploy.sh <your-quay-user> latest undeploy
+DRY_RUN=1 ./modelect-deploy.sh <your-quay-user>
 
 # Production database: deploy PostgreSQL and point the API at it
-WITH_POSTGRES=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
+WITH_POSTGRES=1 ./modelect-deploy.sh <your-quay-user>
+
+# Pin a release tag instead of the rolling 'latest' (optional):
+./modelect-deploy.sh <your-quay-user> v0.2.0
 ```
+
+The tag defaults to `latest` and **re-running the script is a full
+upgrade with the same tag** — containers use `imagePullPolicy: Always`
+and the script restarts existing deployments after `apply`, so pods
+always pull the image you just pushed. No tag bumping needed.
 
 **Data durability:** by default the API persists to embedded SQLite on a
 1Gi PVC (`modelect-data`) — state survives pod restarts, reschedules and

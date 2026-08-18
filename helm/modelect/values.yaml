@@ -7,7 +7,7 @@ image:
   apiRepository: modelect-api
   uiRepository: modelect-ui
   tag: latest
-  pullPolicy: IfNotPresent
+  pullPolicy: Always      # same-tag redeploys always pick up the newest image
 
 # e.g. [{name: quay-pull}] if your quay repos are private
 imagePullSecrets: []

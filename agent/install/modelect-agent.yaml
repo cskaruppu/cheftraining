@@ -98,6 +98,8 @@ spec:
       containers:
         - name: agent
           image: quay.io/__QUAY_NS__/modelect-agent:latest
+          # re-applying with the same tag still picks up the newest push
+          imagePullPolicy: Always
           envFrom:
             - secretRef: {name: modelect-agent}
           env:
