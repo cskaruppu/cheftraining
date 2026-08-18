@@ -31,7 +31,7 @@ def _cost(model_id: str, tokens_in: int, tokens_out: int) -> float:
 
 
 def _row(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
-         cached: bool, ts: datetime) -> dict:
+         cached: bool, ts: datetime, team_id: str | None = None) -> dict:
     return {
         "ts": ts.isoformat(),
         "day": ts.strftime("%Y-%m-%d"),
@@ -42,13 +42,15 @@ def _row(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
         "latency_ms": latency_ms,
         "cached": cached,
         "cost": 0.0 if cached else round(_cost(model_id, tokens_in, tokens_out), 6),
+        "team_id": team_id,
     }
 
 
 def record(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
-           cached: bool = False, ts: datetime | None = None):
+           cached: bool = False, ts: datetime | None = None,
+           team_id: str | None = None):
     row = _row(model_id, tokens_in, tokens_out, latency_ms, cached,
-               ts or datetime.now(timezone.utc))
+               ts or datetime.now(timezone.utc), team_id)
     with engine.begin() as conn:
         conn.execute(insert(events_t).values(**row))
 

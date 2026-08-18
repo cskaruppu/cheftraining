@@ -11,6 +11,7 @@ import Migrate from "./pages/Migrate";
 import Integrate from "./pages/Integrate";
 import Clusters from "./pages/Clusters";
 import Settings from "./pages/Settings";
+import Tokenomics from "./pages/Tokenomics";
 
 function Icon({ children }: { children: ReactNode }) {
   return (
@@ -90,6 +91,13 @@ const ICONS: Record<string, ReactNode> = {
       <polygon points="6 3 20 12 6 21 6 3" />
     </Icon>
   ),
+  tokenomics: (
+    <Icon>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8" />
+      <path d="M12 18V6" />
+    </Icon>
+  ),
   settings: (
     <Icon>
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
@@ -132,6 +140,7 @@ const GROUPS: { label: string; items: { to: string; label: string; icon: string 
   {
     label: "Govern",
     items: [
+      { to: "/tokenomics", label: "Tokenomics", icon: "tokenomics" },
       { to: "/settings", label: "Settings", icon: "settings" },
     ],
   },
@@ -248,7 +257,7 @@ export default function App() {
           <span className="text-[11px] text-muted">
             Gateway <code className="text-ink2">/v1</code>
           </span>
-          <span className="chip !text-[10px]">demo · v0.6</span>
+          <span className="chip !text-[10px]">demo · v1.2</span>
         </div>
       </aside>
 
@@ -265,6 +274,7 @@ export default function App() {
           <Route path="/integrate" element={<Integrate />} />
           <Route path="/compare" element={<Compare />} />
           <Route path="/playground" element={<Playground />} />
+          <Route path="/tokenomics" element={<Tokenomics />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
       </main>

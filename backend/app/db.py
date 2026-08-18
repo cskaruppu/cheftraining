@@ -49,6 +49,25 @@ events_t = Table(
     Column("latency_ms", Integer),
     Column("cached", Boolean),
     Column("cost", Float),
+    Column("team_id", String(40), nullable=True, index=True),
+)
+
+teams_t = Table(
+    "teams", metadata,
+    Column("id", String(40), primary_key=True),
+    Column("name", String(120)),
+    Column("api_key", String(80)),
+    Column("budget_usd", Float),        # rolling 30-day budget
+    Column("policy", String(20)),       # "alert" | "degrade"
+)
+
+enforcement_t = Table(
+    "enforcement_log", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", String(40), index=True),
+    Column("team_id", String(40)),
+    Column("action", String(20)),       # BUDGET | DEGRADE | ANOMALY
+    Column("detail", String(400)),
 )
 
 config_t = Table(
@@ -62,6 +81,16 @@ config_t = Table(
 )
 
 metadata.create_all(engine)
+
+# Migration for databases created before the tokenomics module:
+# add the attribution column to existing event tables.
+from sqlalchemy import inspect as _sa_inspect, text as _sa_text  # noqa: E402
+
+_cols = {c["name"] for c in _sa_inspect(engine).get_columns("analytics_events")}
+if "team_id" not in _cols:
+    with engine.begin() as _conn:
+        _conn.execute(_sa_text(
+            "ALTER TABLE analytics_events ADD COLUMN team_id VARCHAR(40)"))
 
 
 def backend_name() -> str:

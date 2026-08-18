@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import (analytics, clusters, config, deployments, evals, integration,
-               migrate, registry)
+               migrate, registry, tokenomics)
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
@@ -137,7 +137,8 @@ class PlaygroundRequest(BaseModel):
     prompt: str
 
 
-def _simulate_completion(model: dict, prompt: str) -> dict:
+def _simulate_completion(model: dict, prompt: str,
+                         team_id: str | None = None) -> dict:
     """Demo mode: synthesizes a response instead of calling the provider.
 
     Production wiring point — replace with the provider adapter call
@@ -157,7 +158,7 @@ def _simulate_completion(model: dict, prompt: str) -> dict:
         + f". Context window {model['context_window']:,} tokens."
     )
     cost = (tokens_in * model["input_price"] + tokens_out * model["output_price"]) / 1_000_000
-    analytics.record(model["id"], tokens_in, tokens_out, latency)
+    analytics.record(model["id"], tokens_in, tokens_out, latency, team_id=team_id)
     return {
         "model_id": model["id"], "model_name": model["name"], "provider": model["provider"],
         "text": text, "tokens_in": tokens_in, "tokens_out": tokens_out,
@@ -295,6 +296,13 @@ def analytics_summary():
     return analytics.summary()
 
 
+# --------------------------- tokenomics --------------------------------
+
+@app.get("/api/tokenomics")
+def tokenomics_overview():
+    return tokenomics.overview()
+
+
 # ------------------------ config & system ------------------------------
 
 @app.get("/api/config")
@@ -343,8 +351,11 @@ class ChatCompletionRequest(BaseModel):
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest):
-    """Unified API: `model: "auto"` lets the recommender route the call."""
+async def chat_completions(req: ChatCompletionRequest,
+                           authorization: str | None = Header(default=None)):
+    """Unified API: `model: "auto"` lets the recommender route the call.
+    A team API key in the Authorization header attributes the spend and
+    activates that team's tokenomics guardrails."""
     if req.model == "auto":
         rec = recommend("chatbot", {"quality": 40, "cost": 40, "speed": 20})
         model = rec["results"][0]["model"]
@@ -353,8 +364,34 @@ async def chat_completions(req: ChatCompletionRequest):
     else:
         raise HTTPException(404, f"unknown model '{req.model}' — GET /api/models for the catalog")
 
+    # ---- tokenomics guardrails (budget enforcement at the gateway) ----
+    bearer = (authorization or "").removeprefix("Bearer ").strip() or None
+    team = tokenomics.resolve_team(bearer)
+    enforcement = None
+    if team:
+        status = tokenomics.budget_status(team)
+        if status["pct"] >= 100 and team["policy"] == "degrade" \
+                and model["size_class"] != "slm":
+            slm = recommend("chatbot", {"quality": 30, "cost": 50, "speed": 20},
+                            mode="smallest_capable", quality_floor=75)
+            if slm["results"]:
+                degraded_to = slm["results"][0]["model"]
+                enforcement = {
+                    "policy": "degrade",
+                    "team": team["name"],
+                    "budget_pct": status["pct"],
+                    "requested_model": model["id"],
+                    "served_by": degraded_to["id"],
+                    "note": "budget exceeded — served by smallest capable model, no outage",
+                }
+                tokenomics.log_enforcement(
+                    team["id"], "DEGRADE",
+                    f"budget at {status['pct']:.0f}% — request for "
+                    f"{model['id']} served by {degraded_to['id']}")
+                model = degraded_to
+
     prompt = req.messages[-1].content if req.messages else ""
-    sim = _simulate_completion(model, prompt)
+    sim = _simulate_completion(model, prompt, team_id=team["id"] if team else None)
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
 
@@ -368,9 +405,10 @@ async def chat_completions(req: ChatCompletionRequest):
                       "total_tokens": sim["tokens_in"] + sim["tokens_out"]},
             "modelect": {"routed": req.model == "auto", "latency_ms": sim["latency_ms"],
                         "cost_usd": sim["cost"],
-                        "receipt": routing_receipt(model, sim["tokens_in"],
-                                                   sim["tokens_out"],
-                                                   routed=req.model == "auto")},
+                        "receipt": {**routing_receipt(model, sim["tokens_in"],
+                                                      sim["tokens_out"],
+                                                      routed=req.model == "auto"),
+                                    **({"enforcement": enforcement} if enforcement else {})}},
         }
 
     async def sse():

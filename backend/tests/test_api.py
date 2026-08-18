@@ -35,6 +35,45 @@ def test_recommend_with_constraints():
         assert res["reasons"] and 0 <= res["score"] <= 100
 
 
+def test_tokenomics_overview():
+    r = client.get("/api/tokenomics").json()
+    assert len(r["teams"]) == 4
+    states = {t["id"]: t["state"] for t in r["teams"]}
+    assert states["research-agents"] == "degraded"   # over budget, policy degrade
+    assert states["support-bot"] == "warn"           # ~80% used
+    assert states["intern-sandbox"] == "ok"          # no history
+    assert r["kpis"]["blended_per_1m"] > 0
+    assert r["kpis"]["budget_health"]["degraded"] >= 1
+    assert any(s["private"] for s in r["statement"]), "private GPU rows in statement"
+    assert any(not s["private"] for s in r["statement"]), "API rows in statement"
+    # seeded burst shows up as an anomaly and in the enforcement log
+    assert any(a["team_id"] == "research-agents" for a in r["anomalies"])
+    assert any(l["action"] == "DEGRADE" for l in r["enforcement_log"])
+
+
+def test_budget_enforcement_at_gateway():
+    teams = {t["id"]: t for t in client.get("/api/tokenomics").json()["teams"]}
+
+    # over-budget team requesting an expensive model gets degraded to an SLM
+    r = client.post("/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {teams['research-agents']['api_key']}"},
+                    json={"model": "claude-opus-4.5",
+                          "messages": [{"role": "user", "content": "hi"}]}).json()
+    enf = r["modelect"]["receipt"]["enforcement"]
+    assert enf["policy"] == "degrade" and enf["requested_model"] == "claude-opus-4.5"
+    assert r["model"] != "claude-opus-4.5"
+
+    # healthy team is served exactly what it asked for, spend attributed
+    r2 = client.post("/v1/chat/completions",
+                     headers={"Authorization": f"Bearer {teams['intern-sandbox']['api_key']}"},
+                     json={"model": "claude-opus-4.5",
+                           "messages": [{"role": "user", "content": "hi"}]}).json()
+    assert r2["model"] == "claude-opus-4.5"
+    assert "enforcement" not in r2["modelect"]["receipt"]
+    after = {t["id"]: t for t in client.get("/api/tokenomics").json()["teams"]}
+    assert after["intern-sandbox"]["spend"] > teams["intern-sandbox"]["spend"]
+
+
 def test_telemetry_provenance_and_sync():
     models = client.get("/api/models").json()["models"]
     # seeded traffic gives measured telemetry to traffic-bearing models
