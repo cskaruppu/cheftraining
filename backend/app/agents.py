@@ -51,6 +51,10 @@ def upsert_report(report: dict) -> dict:
         "gpus_json": json.dumps(report.get("gpus", []))[:4000],
         "nodes": int(report.get("nodes", 0)),
         "last_seen": time.time(),
+        "gpu_class": report.get("gpu_class")
+                     or ("gpu-ready" if report.get("gpus") else "cpu-only"),
+        "operator_detected": bool(report.get("operator_detected",
+                                             bool(report.get("gpus")))),
     }
     with engine.begin() as conn:
         existing = conn.execute(
@@ -80,6 +84,8 @@ def real_clusters() -> list[dict]:
             "nodes": r["nodes"],
             "agent_age_s": int(age),
             "agent_status": "connected" if age < STALE_AFTER else "stale",
+            "gpu_class": r["gpu_class"] or "cpu-only",
+            "operator_detected": bool(r["operator_detected"]),
             "source": "agent",
         })
     return out

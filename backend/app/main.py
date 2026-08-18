@@ -309,6 +309,9 @@ class AgentReport(BaseModel):
     cost_factor: float = 1.0
     nodes: int = 0
     gpus: list[dict] = []
+    gpu_class: str = ""
+    operator_detected: bool = False
+    gpu_hardware: bool = False
 
 
 @app.post("/api/agent/report")

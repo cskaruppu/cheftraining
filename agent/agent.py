@@ -55,11 +55,20 @@ def collect() -> dict:
     version = _kube_get("/version").get("gitVersion", "")
     pools: dict[str, dict] = {}
     openshift = False
+    gpu_hardware = False       # NVIDIA PCI device present (NFD label)
+    operator_detected = False  # device plugin registered nvidia.com resources
     for n in nodes:
         labels = n["metadata"].get("labels", {})
         if any(k.startswith("node.openshift.io") or "openshift" in k for k in labels):
             openshift = True
         alloc = n.get("status", {}).get("allocatable", {})
+        if (labels.get("feature.node.kubernetes.io/pci-10de.present") == "true"
+                or labels.get("nvidia.com/gpu.present") == "true"
+                or "nvidia.com/gpu.product" in labels):
+            gpu_hardware = True
+        if "nvidia.com/gpu" in alloc or any(k.startswith("nvidia.com/mig-") for k in alloc):
+            operator_detected = True
+            gpu_hardware = True
         product = labels.get("nvidia.com/gpu.product", "GPU")
         mem_mb = labels.get("nvidia.com/gpu.memory", "")
         base_type = product.replace("-", " ") \
@@ -89,6 +98,13 @@ def collect() -> dict:
                 "count": 0, "virtual": sliced,
                 "mode": "time-slice" if sliced else "dedicated"})
             pool["count"] += count
+    schedulable = sum(p["count"] for p in pools.values())
+    if operator_detected and schedulable > 0:
+        gpu_class = "gpu-ready"        # operator running, GPUs schedulable
+    elif gpu_hardware:
+        gpu_class = "gpu-unmanaged"    # GPUs present, operator missing/idle
+    else:
+        gpu_class = "cpu-only"
     return {
         "cluster_id": os.environ["CLUSTER_ID"],
         "name": os.environ.get("CLUSTER_NAME", os.environ["CLUSTER_ID"]),
@@ -99,6 +115,9 @@ def collect() -> dict:
         "cost_factor": float(os.environ.get("COST_FACTOR", "1.0")),
         "nodes": len(nodes),
         "gpus": list(pools.values()),
+        "gpu_class": gpu_class,
+        "operator_detected": operator_detected,
+        "gpu_hardware": gpu_hardware,
     }
 
 

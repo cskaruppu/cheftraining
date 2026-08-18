@@ -87,6 +87,8 @@ def snapshot() -> list[dict]:
                 "utilization_pct": int(used / total * 100) if total else 0,
                 "agent_status": "connected",
                 "last_heartbeat_s": int(now % 9) + 2,
+                "gpu_class": "gpu-ready",
+                "operator_detected": True,
                 "source": "simulated",
             })
     for c in agents.real_clusters():
@@ -109,6 +111,8 @@ def snapshot() -> list[dict]:
             "utilization_pct": int(used_total / total * 100) if total else 0,
             "agent_status": c["agent_status"],
             "last_heartbeat_s": c["agent_age_s"],
+            "gpu_class": c["gpu_class"],
+            "operator_detected": c["operator_detected"],
             "source": "agent",
         })
     return out
@@ -137,6 +141,14 @@ def place(profile_gpus: str, residency: str | None = None) -> dict:
         if c["source"] == "agent" and c["agent_status"] != "connected":
             entry.update(eligible=False)
             entry["reasons"].append("agent heartbeat stale — not schedulable")
+            ranked.append(entry)
+            continue
+        if c.get("gpu_class") and c["gpu_class"] != "gpu-ready":
+            entry.update(eligible=False)
+            reason = f"not GPU-schedulable (class: {c['gpu_class']})"
+            if c["gpu_class"] == "gpu-unmanaged":
+                reason += " — GPUs present but the NVIDIA GPU Operator is missing"
+            entry["reasons"].append(reason)
             ranked.append(entry)
             continue
         pool = next((g for g in c["gpus"] if g["family"] == family), None)

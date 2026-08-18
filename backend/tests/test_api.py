@@ -345,6 +345,22 @@ def test_agent_reporting_and_real_cluster_lifecycle():
     lab = next(c for c in fleet if c["id"] == "caaslab")
     assert lab["source"] == "agent" and lab["agent_status"] == "connected"
     assert lab["gpus"][0]["virtual"] is True and lab["gpus"][0]["free"] == 8
+    assert lab["gpu_class"] == "gpu-ready"  # inferred from reported pools
+
+    # a CPU-only cluster registers, is classified, and is never a
+    # placement target for GPU profiles
+    client.post("/api/agent/report", json={
+        "cluster_id": "edge-cpu", "name": "Edge CPU", "nodes": 3,
+        "gpus": [], "gpu_class": "cpu-only", "operator_detected": False,
+    }, headers={"X-Agent-Token": token})
+    fleet = client.get("/api/clusters").json()["clusters"]
+    edge = next(c for c in fleet if c["id"] == "edge-cpu")
+    assert edge["gpu_class"] == "cpu-only"
+    p = client.post("/api/placement", json={
+        "model_id": "mistral-small-3.2", "profile_id": "balanced"}).json()
+    edge_entry = next(c for c in p["clusters"] if c["cluster_id"] == "edge-cpu")
+    assert edge_entry["eligible"] is False
+    assert "not GPU-schedulable" in edge_entry["reasons"][0]
     # placement can target the real cluster explicitly, deploy consumes vGPUs
     dep = client.post("/api/deployments", json={
         "model_id": "mistral-small-3.2", "profile_id": "balanced",

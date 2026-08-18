@@ -78,6 +78,8 @@ agents_t = Table(
     Column("gpus_json", String(4000)),   # [{family,type,count}]
     Column("nodes", Integer),
     Column("last_seen", Float),
+    Column("gpu_class", String(20)),     # gpu-ready | gpu-unmanaged | cpu-only
+    Column("operator_detected", Boolean),
 )
 
 users_t = Table(
@@ -130,6 +132,16 @@ _TEAM_MIGRATIONS = {
 }
 for _name, _ddl in _TEAM_MIGRATIONS.items():
     if _name not in _team_cols:
+        with engine.begin() as _conn:
+            _conn.execute(_sa_text(_ddl))
+
+_agent_cols = {c["name"] for c in _sa_inspect(engine).get_columns("agent_clusters")}
+_AGENT_MIGRATIONS = {
+    "gpu_class": "ALTER TABLE agent_clusters ADD COLUMN gpu_class VARCHAR(20)",
+    "operator_detected": "ALTER TABLE agent_clusters ADD COLUMN operator_detected BOOLEAN",
+}
+for _name, _ddl in _AGENT_MIGRATIONS.items():
+    if _name not in _agent_cols:
         with engine.begin() as _conn:
             _conn.execute(_sa_text(_ddl))
 
