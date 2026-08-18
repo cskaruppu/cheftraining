@@ -59,6 +59,11 @@ teams_t = Table(
     Column("api_key", String(80)),
     Column("budget_usd", Float),        # rolling 30-day budget
     Column("policy", String(20)),       # "alert" | "degrade"
+    Column("enabled", Boolean, default=True),        # kill switch
+    Column("rate_limit_tpm", Integer, nullable=True),  # tokens/minute
+    Column("max_input_tokens", Integer, nullable=True),
+    Column("max_output_tokens", Integer, nullable=True),
+    Column("allowed_tiers", String(40), nullable=True),  # e.g. "slm,mid"
 )
 
 enforcement_t = Table(
@@ -91,6 +96,19 @@ if "team_id" not in _cols:
     with engine.begin() as _conn:
         _conn.execute(_sa_text(
             "ALTER TABLE analytics_events ADD COLUMN team_id VARCHAR(40)"))
+
+_team_cols = {c["name"] for c in _sa_inspect(engine).get_columns("teams")}
+_TEAM_MIGRATIONS = {
+    "enabled": "ALTER TABLE teams ADD COLUMN enabled BOOLEAN DEFAULT 1",
+    "rate_limit_tpm": "ALTER TABLE teams ADD COLUMN rate_limit_tpm INTEGER",
+    "max_input_tokens": "ALTER TABLE teams ADD COLUMN max_input_tokens INTEGER",
+    "max_output_tokens": "ALTER TABLE teams ADD COLUMN max_output_tokens INTEGER",
+    "allowed_tiers": "ALTER TABLE teams ADD COLUMN allowed_tiers VARCHAR(40)",
+}
+for _name, _ddl in _TEAM_MIGRATIONS.items():
+    if _name not in _team_cols:
+        with engine.begin() as _conn:
+            _conn.execute(_sa_text(_ddl))
 
 
 def backend_name() -> str:

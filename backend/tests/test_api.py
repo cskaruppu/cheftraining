@@ -63,15 +63,79 @@ def test_budget_enforcement_at_gateway():
     assert enf["policy"] == "degrade" and enf["requested_model"] == "claude-opus-4.5"
     assert r["model"] != "claude-opus-4.5"
 
-    # healthy team is served exactly what it asked for, spend attributed
+    # healthy, unrestricted team is served exactly what it asked for
     r2 = client.post("/v1/chat/completions",
-                     headers={"Authorization": f"Bearer {teams['intern-sandbox']['api_key']}"},
+                     headers={"Authorization": f"Bearer {teams['doc-pipeline']['api_key']}"},
                      json={"model": "claude-opus-4.5",
                            "messages": [{"role": "user", "content": "hi"}]}).json()
     assert r2["model"] == "claude-opus-4.5"
     assert "enforcement" not in r2["modelect"]["receipt"]
     after = {t["id"]: t for t in client.get("/api/tokenomics").json()["teams"]}
-    assert after["intern-sandbox"]["spend"] > teams["intern-sandbox"]["spend"]
+    assert after["doc-pipeline"]["spend"] > teams["doc-pipeline"]["spend"]
+
+
+def test_guardrails_tier_shape_rate_killswitch():
+    teams = {t["id"]: t for t in client.get("/api/tokenomics").json()["teams"]}
+    hdr = lambda tid: {"Authorization": f"Bearer {teams[tid]['api_key']}"}
+    msg = lambda content: {"messages": [{"role": "user", "content": content}]}
+
+    # tier allowlist: intern-sandbox (slm,mid) may not call a large model
+    r = client.post("/v1/chat/completions", headers=hdr("intern-sandbox"),
+                    json={"model": "claude-opus-4.5", **msg("hi")})
+    assert r.status_code == 403 and "tier" in r.json()["detail"]
+
+    # input-shape limit: intern's max_input_tokens=8000
+    r = client.post("/v1/chat/completions", headers=hdr("intern-sandbox"),
+                    json={"model": "phi-4", **msg("word " * 7000)})
+    assert r.status_code == 400 and "max_input_tokens" in r.json()["detail"]
+
+    # token-rate limit: with a 100 tpm cap, doc-pipeline gets throttled
+    # within the 60s window (first call may pass if the window is empty)
+    client.put("/api/teams/doc-pipeline", json={"rate_limit_tpm": 100})
+    first = client.post("/v1/chat/completions", headers=hdr("doc-pipeline"),
+                        json={"model": "gemini-2.5-flash", **msg("hello there")})
+    if first.status_code == 200:
+        second = client.post("/v1/chat/completions", headers=hdr("doc-pipeline"),
+                             json={"model": "gemini-2.5-flash", **msg("hello again")})
+        assert second.status_code == 429
+    else:
+        assert first.status_code == 429
+    client.put("/api/teams/doc-pipeline", json={"rate_limit_tpm": 10_000_000})
+
+    # kill switch: pause -> 403, resume -> 200
+    client.put("/api/teams/support-bot", json={"enabled": False})
+    r = client.post("/v1/chat/completions", headers=hdr("support-bot"),
+                    json={"model": "claude-haiku-4.5", **msg("hi")})
+    assert r.status_code == 403 and "paused" in r.json()["detail"]
+    client.put("/api/teams/support-bot", json={"enabled": True})
+    r = client.post("/v1/chat/completions", headers=hdr("support-bot"),
+                    json={"model": "claude-haiku-4.5", **msg("hi")})
+    assert r.status_code == 200
+    # enforcement log captured the blocks and the kill switch
+    log = client.get("/api/tokenomics").json()["enforcement_log"]
+    assert any(l["action"] == "BLOCK" for l in log)
+    assert any(l["action"] == "KILLSWITCH" for l in log)
+
+
+def test_cascade_routing():
+    # simple prompt: stays on the tier-1 SLM and reports the saving
+    r = client.post("/v1/chat/completions", json={
+        "model": "cascade", "messages": [{"role": "user", "content": "hi there"}],
+    }).json()
+    cascade = r["modelect"]["receipt"]["cascade"]
+    assert cascade["escalated"] is False
+    assert r["model"] == cascade["tier1"]
+    assert cascade["saved_usd"] > 0 and cascade["vs_model"]
+
+    # complex prompt: escalates to a strong model
+    hard = ("Analyze the architecture of our payment platform step by step, "
+            "design a migration plan and prove the rollback strategy is safe.")
+    r2 = client.post("/v1/chat/completions", json={
+        "model": "cascade", "messages": [{"role": "user", "content": hard}],
+    }).json()
+    c2 = r2["modelect"]["receipt"]["cascade"]
+    assert c2["escalated"] is True
+    assert r2["model"] == c2["served_by"] != c2["tier1"]
 
 
 def test_telemetry_provenance_and_sync():

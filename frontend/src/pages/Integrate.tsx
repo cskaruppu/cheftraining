@@ -105,6 +105,10 @@ export default function Integrate() {
                   ))}
                 </optgroup>
               )}
+              <optgroup label="Gateway policies">
+                <option value="model:auto">auto — recommender routes each call</option>
+                <option value="model:cascade">cascade — SLM-first, escalates when complex</option>
+              </optgroup>
               <optgroup label="Gateway models">
                 {models.map((m) => (
                   <option key={m.id} value={`model:${m.id}`}>{m.name}</option>

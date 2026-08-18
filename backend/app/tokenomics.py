@@ -33,12 +33,14 @@ _MODEL_TEAM = {
     "deepseek-v3.2": "research-agents",
 }
 
-# (id, name, policy, budget as multiple of observed spend -> demo status)
+# (id, name, policy, budget multiple of observed spend, extra guardrails)
 _TEAM_SEED = [
-    ("support-bot", "support-bot", "alert", 1.25),      # ~80% used -> warn
-    ("doc-pipeline", "doc-pipeline", "degrade", 4.0),   # ~25% used -> ok
-    ("research-agents", "research-agents", "degrade", 0.95),  # >100% -> degraded
-    ("intern-sandbox", "intern-sandbox", "degrade", None),    # fixed $50, no history
+    ("support-bot", "support-bot", "alert", 1.25, {}),           # ~80% -> warn
+    ("doc-pipeline", "doc-pipeline", "degrade", 4.0, {}),        # ~25% -> ok
+    ("research-agents", "research-agents", "degrade", 0.95,      # >100% -> degraded
+     {"rate_limit_tpm": 120_000}),
+    ("intern-sandbox", "intern-sandbox", "degrade", None,        # fixed $50
+     {"allowed_tiers": "slm,mid", "max_input_tokens": 8000}),
 ]
 
 
@@ -86,11 +88,11 @@ def seed():
             select(events_t.c.team_id, func.sum(events_t.c.cost).label("cost"))
             .where(events_t.c.team_id.isnot(None))
             .group_by(events_t.c.team_id))}
-        for team_id, name, policy, mult in _TEAM_SEED:
+        for team_id, name, policy, mult, extra in _TEAM_SEED:
             budget = 50.0 if mult is None else round(max(1.0, spend.get(team_id, 0) * mult), 2)
             conn.execute(insert(teams_t).values(
                 id=team_id, name=name, policy=policy, budget_usd=budget,
-                api_key=f"tk-{secrets.token_hex(12)}"))
+                api_key=f"tk-{secrets.token_hex(12)}", enabled=True, **extra))
         # 4. the burst tripped the budget: log the degrade decision
         conn.execute(insert(enforcement_t).values(
             ts=(burst_ts + timedelta(minutes=3)).isoformat(),
@@ -126,6 +128,58 @@ def budget_status(team: dict) -> dict:
     else:
         state = "ok"
     return {"spend": round(spend, 4), "pct": round(pct, 1), "state": state}
+
+
+def tokens_last_minute(team_id: str) -> int:
+    cutoff = (_now() - timedelta(seconds=60)).isoformat()
+    with engine.connect() as conn:
+        return conn.execute(
+            select(func.sum(events_t.c.tokens_in + events_t.c.tokens_out))
+            .where(events_t.c.team_id == team_id,
+                   events_t.c.ts >= cutoff)).scalar() or 0
+
+
+def precheck(team: dict, model: dict, est_input_tokens: int) -> dict | None:
+    """Deterministic guardrails evaluated before serving a request.
+    Returns {code, reason} on violation, None when clear. Order:
+    kill switch -> tier allowlist -> input shape -> token rate."""
+    if not team.get("enabled", True):
+        return {"code": 403, "reason": f"team '{team['name']}' is paused (kill switch)"}
+    tiers = (team.get("allowed_tiers") or "").strip()
+    if tiers and model["size_class"] not in tiers.split(","):
+        return {"code": 403,
+                "reason": f"model tier '{model['size_class']}' not allowed for "
+                          f"team '{team['name']}' (allowed: {tiers})"}
+    max_in = team.get("max_input_tokens")
+    if max_in and est_input_tokens > max_in:
+        return {"code": 400,
+                "reason": f"input ~{est_input_tokens} tokens exceeds the team's "
+                          f"max_input_tokens ({max_in})"}
+    tpm = team.get("rate_limit_tpm")
+    if tpm and tokens_last_minute(team["id"]) > tpm:
+        return {"code": 429,
+                "reason": f"token-rate limit reached ({tpm:,} tokens/min) — retry shortly"}
+    return None
+
+
+def update_team(team_id: str, fields: dict) -> dict:
+    allowed = {"enabled", "budget_usd", "policy", "rate_limit_tpm",
+               "max_input_tokens", "max_output_tokens", "allowed_tiers"}
+    bad = set(fields) - allowed
+    if bad:
+        raise ValueError(f"unknown field(s): {sorted(bad)}")
+    if "policy" in fields and fields["policy"] not in ("alert", "degrade"):
+        raise ValueError("policy must be 'alert' or 'degrade'")
+    with engine.begin() as conn:
+        row = conn.execute(select(teams_t).where(teams_t.c.id == team_id)).mappings().first()
+        if row is None:
+            raise ValueError("unknown team")
+        conn.execute(update(teams_t).where(teams_t.c.id == team_id).values(**fields))
+        merged = {**dict(row), **fields}
+    if "enabled" in fields:
+        log_enforcement(team_id, "KILLSWITCH",
+                        "key paused by admin" if not fields["enabled"] else "key re-enabled")
+    return merged
 
 
 def log_enforcement(team_id: str, action: str, detail: str):
@@ -195,6 +249,10 @@ def overview() -> dict:
         team_views.append({
             "id": t["id"], "name": t["name"], "policy": t["policy"],
             "budget_usd": t["budget_usd"], "api_key": t["api_key"],
+            "enabled": bool(t.get("enabled", True)),
+            "rate_limit_tpm": t.get("rate_limit_tpm"),
+            "allowed_tiers": t.get("allowed_tiers"),
+            "max_input_tokens": t.get("max_input_tokens"),
             "tokens": int(sum(r.tokens or 0 for r in mine)),
             "top_model": top, **status,
         })

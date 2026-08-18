@@ -8,6 +8,10 @@ interface TeamView {
   policy: string;
   budget_usd: number;
   api_key: string;
+  enabled: boolean;
+  rate_limit_tpm: number | null;
+  allowed_tiers: string | null;
+  max_input_tokens: number | null;
   tokens: number;
   top_model: string;
   spend: number;
@@ -58,6 +62,15 @@ export default function Tokenomics() {
     setTimeout(() => setCopied(""), 1500);
   };
 
+  const togglePause = async (t: TeamView) => {
+    await fetch(`/api/teams/${t.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !t.enabled }),
+    });
+    refresh();
+  };
+
   return (
     <div>
       <PageHeader
@@ -102,9 +115,17 @@ export default function Tokenomics() {
                   {data.teams.map((t) => {
                     const chip = STATE_CHIP[t.state] ?? STATE_CHIP.ok;
                     const barColor = t.pct >= 90 ? "#d03b3b" : t.pct >= 70 ? "#fab219" : "#3987e5";
+                    const guards = [
+                      t.allowed_tiers && `tiers: ${t.allowed_tiers}`,
+                      t.rate_limit_tpm && `${(t.rate_limit_tpm / 1000).toFixed(0)}k tpm`,
+                      t.max_input_tokens && `max in: ${fmtCompact(t.max_input_tokens)}`,
+                    ].filter(Boolean).join(" · ");
                     return (
-                      <tr key={t.id} className="border-b border-edge/50">
-                        <td className="py-2.5 pr-4 text-ink">{t.name}</td>
+                      <tr key={t.id} className={`border-b border-edge/50 ${t.enabled ? "" : "opacity-50"}`}>
+                        <td className="py-2.5 pr-4">
+                          <div className="text-ink">{t.name}</div>
+                          {guards && <div className="text-[10px] text-muted mt-0.5">{guards}</div>}
+                        </td>
                         <td className="py-2.5 pr-4 text-right text-ink2 tabular-nums">{fmtCompact(t.tokens)}</td>
                         <td className="py-2.5 pr-4 text-right text-ink2 tabular-nums">
                           {fmtMoney(t.spend)} / {fmtMoney(t.budget_usd)}
@@ -116,15 +137,26 @@ export default function Tokenomics() {
                           </div>
                         </td>
                         <td className="py-2.5 pr-4">
-                          <span className={`chip ${chip.cls}`}>{chip.label(t)}</span>
+                          {t.enabled ? (
+                            <span className={`chip ${chip.cls}`}>{chip.label(t)}</span>
+                          ) : (
+                            <span className="chip">⏸ paused</span>
+                          )}
                         </td>
                         <td className="py-2.5 pr-4 text-ink2">{t.top_model}</td>
                         <td className="py-2.5">
-                          <button className="chip hover:!text-ink transition"
-                            title="copy this team's API key — use it as the Bearer token to see attribution and enforcement live"
-                            onClick={() => copyKey(t)}>
-                            {copied === t.id ? "copied ✓" : `${t.api_key.slice(0, 7)}…`}
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button className="chip hover:!text-ink transition"
+                              title="copy this team's API key — use it as the Bearer token to see attribution and enforcement live"
+                              onClick={() => copyKey(t)}>
+                              {copied === t.id ? "copied ✓" : `${t.api_key.slice(0, 7)}…`}
+                            </button>
+                            <button className="chip hover:!text-ink transition"
+                              title={t.enabled ? "kill switch: pause this key immediately" : "re-enable this key"}
+                              onClick={() => togglePause(t)}>
+                              {t.enabled ? "pause" : "resume"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );

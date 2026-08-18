@@ -138,7 +138,8 @@ class PlaygroundRequest(BaseModel):
 
 
 def _simulate_completion(model: dict, prompt: str,
-                         team_id: str | None = None) -> dict:
+                         team_id: str | None = None,
+                         max_output_tokens: int | None = None) -> dict:
     """Demo mode: synthesizes a response instead of calling the provider.
 
     Production wiring point — replace with the provider adapter call
@@ -147,6 +148,8 @@ def _simulate_completion(model: dict, prompt: str,
     rng = random.Random(hash((model["id"], prompt)) & 0xFFFF)
     tokens_in = max(8, len(prompt.split()) * 4 // 3)
     tokens_out = rng.randint(90, 220)
+    if max_output_tokens:
+        tokens_out = min(tokens_out, max_output_tokens)
     latency = int(rng.gauss(model["latency_ms"], model["latency_ms"] * 0.15))
     text = (
         f"[demo response — provider call not wired in this build]\n\n"
@@ -303,6 +306,28 @@ def tokenomics_overview():
     return tokenomics.overview()
 
 
+class TeamUpdate(BaseModel):
+    enabled: bool | None = None
+    budget_usd: float | None = None
+    policy: str | None = None
+    rate_limit_tpm: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    allowed_tiers: str | None = None
+
+
+@app.put("/api/teams/{team_id}")
+def put_team(team_id: str, req: TeamUpdate):
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(400, "no fields to update")
+    try:
+        merged = tokenomics.update_team(team_id, fields)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": team_id, **{k: merged[k] for k in fields}}
+
+
 # ------------------------ config & system ------------------------------
 
 @app.get("/api/config")
@@ -350,25 +375,62 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
 
 
+_CASCADE_KEYWORDS = ("analyze", "architecture", "design", "legal", "contract",
+                     "prove", "math", "step by step", "plan", "strategy",
+                     "debug", "reason")
+
+
+def _cascade_strong_model() -> dict:
+    return max(MODELS, key=lambda m: m["quality"]["chat"])
+
+
+def _cascade_route(prompt: str) -> tuple[dict, dict | None, str]:
+    """SLM-first cascade: a complexity classifier decides whether the
+    tier-1 small model suffices or the request escalates to the
+    strongest model. Returns (serving_model, tier1_model, reason)."""
+    tier1 = recommend("chatbot", {"quality": 30, "cost": 50, "speed": 20},
+                      mode="smallest_capable", quality_floor=75)["results"][0]["model"]
+    hard = (len(prompt.split()) > 80
+            or any(k in prompt.lower() for k in _CASCADE_KEYWORDS))
+    if not hard:
+        return tier1, tier1, "classified simple — handled by tier-1 SLM"
+    return _cascade_strong_model(), tier1, "classified complex (length/keywords) — escalated"
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest,
                            authorization: str | None = Header(default=None)):
-    """Unified API: `model: "auto"` lets the recommender route the call.
+    """Unified API: `model: "auto"` routes via the recommender and
+    `model: "cascade"` applies SLM-first routing with escalation.
     A team API key in the Authorization header attributes the spend and
     activates that team's tokenomics guardrails."""
+    prompt = req.messages[-1].content if req.messages else ""
+    cascade_info = None
     if req.model == "auto":
         rec = recommend("chatbot", {"quality": 40, "cost": 40, "speed": 20})
         model = rec["results"][0]["model"]
+    elif req.model == "cascade":
+        model, tier1, cascade_reason = _cascade_route(prompt)
+        cascade_info = {"policy": "cascade", "tier1": tier1["id"],
+                        "served_by": model["id"],
+                        "escalated": model["id"] != tier1["id"],
+                        "reason": cascade_reason}
     elif req.model in MODELS_BY_ID:
         model = MODELS_BY_ID[req.model]
     else:
         raise HTTPException(404, f"unknown model '{req.model}' — GET /api/models for the catalog")
 
-    # ---- tokenomics guardrails (budget enforcement at the gateway) ----
+    # ---- tokenomics guardrails (enforced at the gateway) --------------
     bearer = (authorization or "").removeprefix("Bearer ").strip() or None
     team = tokenomics.resolve_team(bearer)
     enforcement = None
     if team:
+        est_input = max(8, len(prompt.split()) * 4 // 3)
+        violation = tokenomics.precheck(team, model, est_input)
+        if violation:
+            tokenomics.log_enforcement(
+                team["id"], "BLOCK", f"{violation['code']}: {violation['reason']}")
+            raise HTTPException(violation["code"], violation["reason"])
         status = tokenomics.budget_status(team)
         if status["pct"] >= 100 and team["policy"] == "degrade" \
                 and model["size_class"] != "slm":
@@ -390,8 +452,19 @@ async def chat_completions(req: ChatCompletionRequest,
                     f"{model['id']} served by {degraded_to['id']}")
                 model = degraded_to
 
-    prompt = req.messages[-1].content if req.messages else ""
-    sim = _simulate_completion(model, prompt, team_id=team["id"] if team else None)
+    sim = _simulate_completion(
+        model, prompt,
+        team_id=team["id"] if team else None,
+        max_output_tokens=team.get("max_output_tokens") if team else None)
+
+    # cascade savings: what the strong model would have cost for this shape
+    if cascade_info and not cascade_info["escalated"]:
+        strong = _cascade_strong_model()
+        strong_cost = (sim["tokens_in"] * strong["input_price"]
+                       + sim["tokens_out"] * strong["output_price"]) / 1_000_000
+        cascade_info["saved_usd"] = round(max(0.0, strong_cost - sim["cost"]), 6)
+        cascade_info["vs_model"] = strong["id"]
+
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
 
@@ -407,8 +480,9 @@ async def chat_completions(req: ChatCompletionRequest,
                         "cost_usd": sim["cost"],
                         "receipt": {**routing_receipt(model, sim["tokens_in"],
                                                       sim["tokens_out"],
-                                                      routed=req.model == "auto"),
-                                    **({"enforcement": enforcement} if enforcement else {})}},
+                                                      routed=req.model in ("auto", "cascade")),
+                                    **({"enforcement": enforcement} if enforcement else {}),
+                                    **({"cascade": cascade_info} if cascade_info else {})}},
         }
 
     async def sse():
