@@ -19,6 +19,8 @@
 #    INGRESS_HOST    hostname — required for kubernetes deploys
 #    SKIP_BUILD=1    skip build & push (redeploy existing images)
 #    DRY_RUN=1       print the manifests instead of applying them
+#    WITH_POSTGRES=1 deploy a PostgreSQL instance and point the API at it
+#                    (default: durable SQLite on a 1Gi PVC)
 #    REPO_URL        source repo to clone when not run from a checkout
 #                    (default: https://github.com/cskaruppu/cheftraining.git)
 #    REPO_BRANCH     branch to check out
@@ -71,6 +73,30 @@ detect_cli() {
 
 # ------------------------------------------------------------------ manifests
 manifests() {
+  # Storage mode: PostgreSQL (env from secret) or SQLite on a PVC.
+  # Recreate strategy: the data PVC is RWO, and SQLite must never have
+  # two writers — a rolling update would try both.
+  if [[ "${WITH_POSTGRES:-0}" == "1" ]]; then
+    API_ENV='env: [{name: DATABASE_URL, valueFrom: {secretKeyRef: {name: modelect-db, key: database-url}}}]'
+    API_VOLUMES=""
+    API_MOUNTS=""
+  else
+    API_ENV=""
+    API_VOLUMES='volumes: [{name: data, persistentVolumeClaim: {claimName: modelect-data}}]'
+    API_MOUNTS='volumeMounts: [{name: data, mountPath: /opt/app/data}]'
+    cat <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: modelect-data
+  labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}
+---
+EOF
+  fi
   cat <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -79,6 +105,7 @@ metadata:
   labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
 spec:
   replicas: 1
+  strategy: {type: Recreate}
   selector:
     matchLabels: {app: orchestrator-api}
   template:
@@ -86,10 +113,13 @@ spec:
       labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
     spec:
       ${PULL_SECRET_LINE}
+      ${API_VOLUMES}
       containers:
         - name: api
           image: ${API_IMAGE}
           ports: [{containerPort: 8000}]
+          ${API_ENV}
+          ${API_MOUNTS}
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: 500m, memory: 512Mi}
@@ -267,6 +297,72 @@ if [[ -n "${QUAY_USERNAME:-}" && -n "${QUAY_PASSWORD:-}" ]]; then
     --docker-username="$QUAY_USERNAME" \
     --docker-password="$QUAY_PASSWORD" >/dev/null
   PULL_SECRET_LINE='imagePullSecrets: [{name: quay-pull}]'
+fi
+
+# ---- optional PostgreSQL (WITH_POSTGRES=1) --------------------------------
+if [[ "${WITH_POSTGRES:-0}" == "1" ]]; then
+  if ! "$CLI" -n "$NAMESPACE" get secret modelect-db >/dev/null 2>&1; then
+    log "Creating PostgreSQL credentials secret"
+    DB_PASS="$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 20)"
+    "$CLI" -n "$NAMESPACE" create secret generic modelect-db \
+      --from-literal=username=modelect \
+      --from-literal=password="$DB_PASS" \
+      --from-literal=database=modelect \
+      --from-literal=database-url="postgresql://modelect:${DB_PASS}@modelect-postgres:5432/modelect"
+  fi
+  log "Deploying PostgreSQL (sclorg image, restricted-SCC friendly)"
+  cat <<EOF | "$CLI" -n "$NAMESPACE" apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: modelect-postgres-data
+  labels: {app: modelect-postgres, app.kubernetes.io/part-of: modelect}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 2Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modelect-postgres
+  labels: {app: modelect-postgres, app.kubernetes.io/part-of: modelect}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: modelect-postgres}
+  template:
+    metadata:
+      labels: {app: modelect-postgres, app.kubernetes.io/part-of: modelect}
+    spec:
+      volumes: [{name: pgdata, persistentVolumeClaim: {claimName: modelect-postgres-data}}]
+      containers:
+        - name: postgres
+          image: quay.io/sclorg/postgresql-15-c9s:latest
+          ports: [{containerPort: 5432}]
+          env:
+            - {name: POSTGRESQL_USER, valueFrom: {secretKeyRef: {name: modelect-db, key: username}}}
+            - {name: POSTGRESQL_PASSWORD, valueFrom: {secretKeyRef: {name: modelect-db, key: password}}}
+            - {name: POSTGRESQL_DATABASE, valueFrom: {secretKeyRef: {name: modelect-db, key: database}}}
+          volumeMounts: [{name: pgdata, mountPath: /var/lib/pgsql/data}]
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          readinessProbe:
+            exec: {command: [/usr/libexec/check-container]}
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: modelect-postgres
+  labels: {app: modelect-postgres, app.kubernetes.io/part-of: modelect}
+spec:
+  selector: {app: modelect-postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+EOF
+  "$CLI" -n "$NAMESPACE" rollout status deployment/modelect-postgres --timeout=300s
 fi
 
 log "Applying manifests"

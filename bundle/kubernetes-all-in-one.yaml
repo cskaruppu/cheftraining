@@ -1,6 +1,16 @@
 # Modelect all-in-one bundle — vanilla Kubernetes variant (Ingress).
 # Placeholders __IMAGE_NS__ / __IMAGE_TAG__ / __INGRESS_HOST__ are filled
 # by scripts/one-shot-deploy.sh (or replace manually and `kubectl apply -f`).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: modelect-data
+  labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,16 +18,19 @@ metadata:
   labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
 spec:
   replicas: 1
+  strategy: {type: Recreate}
   selector:
     matchLabels: {app: orchestrator-api}
   template:
     metadata:
       labels: {app: orchestrator-api, app.kubernetes.io/part-of: modelect}
     spec:
+      volumes: [{name: data, persistentVolumeClaim: {claimName: modelect-data}}]
       containers:
         - name: api
           image: quay.io/__IMAGE_NS__/modelect-api:__IMAGE_TAG__
           ports: [{containerPort: 8000}]
+          volumeMounts: [{name: data, mountPath: /opt/app/data}]
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: 500m, memory: 512Mi}

@@ -3,9 +3,14 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
+    volumes:
+      - modelect-data:/opt/app/data
   orchestrator-ui:
     build: ./frontend
     ports:
       - "8080:8080"
     depends_on:
       - orchestrator-api
+
+volumes:
+  modelect-data:

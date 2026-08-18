@@ -7,6 +7,7 @@ metadata:
     {{- include "modelect.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.api.replicas }}
+  strategy: {type: Recreate}
   selector:
     matchLabels:
       app: orchestrator-api
@@ -20,12 +21,27 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if and .Values.persistence.enabled (not .Values.database.url) }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: modelect-data
+      {{- end }}
       containers:
         - name: api
           image: {{ include "modelect.apiImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8000
+          {{- if .Values.database.url }}
+          env:
+            - name: DATABASE_URL
+              value: {{ .Values.database.url | quote }}
+          {{- else if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /opt/app/data
+          {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           readinessProbe:

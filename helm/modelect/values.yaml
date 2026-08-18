@@ -32,3 +32,15 @@ ingress:
   host: ""                 # required when type=ingress
   className: ""            # e.g. "nginx"; empty uses the cluster default
   tlsSecret: ""            # existing TLS secret for the host (optional)
+
+persistence:
+  # Durable embedded SQLite: mounts a PVC at the API's data dir.
+  # Ignored when database.url is set (PostgreSQL mode).
+  enabled: true
+  size: 1Gi
+  storageClassName: ""     # empty uses the cluster default
+
+database:
+  # PostgreSQL DSN, e.g. postgresql://user:pass@host:5432/modelect.
+  # When set, the API uses PostgreSQL and no data PVC is mounted.
+  url: ""

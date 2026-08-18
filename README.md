@@ -75,7 +75,19 @@ INGRESS_HOST=modelect.example.com ./modelect-deploy.sh <your-quay-user> v0.2.0
 SKIP_BUILD=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
 ./modelect-deploy.sh <your-quay-user> v0.2.0 undeploy
 DRY_RUN=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
+
+# Production database: deploy PostgreSQL and point the API at it
+WITH_POSTGRES=1 ./modelect-deploy.sh <your-quay-user> v0.2.0
 ```
+
+**Data durability:** by default the API persists to embedded SQLite on a
+1Gi PVC (`modelect-data`) — state survives pod restarts, reschedules and
+upgrades with zero extra components. `WITH_POSTGRES=1` instead deploys a
+PostgreSQL instance (OpenShift-friendly sclorg image, auto-generated
+credentials in secret `modelect-db`) and wires `DATABASE_URL` into the
+API — the path for multi-replica scaling. Manual equivalents:
+`openshift/postgres.yaml`, or Helm values `persistence.*` /
+`database.url`.
 
 Equivalent modular flow (uses Helm when installed, `bundle/` otherwise):
 

@@ -1,3 +1,19 @@
+# 1Gi PVC keeps the embedded SQLite store across pod restarts and
+# reschedules. For PostgreSQL instead, see openshift/postgres.yaml and
+# add the DATABASE_URL env (secret modelect-db) to the api container.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: modelect-data
+  labels:
+    app: orchestrator-api
+    app.kubernetes.io/part-of: modelect
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +23,8 @@ metadata:
     app.kubernetes.io/part-of: modelect
 spec:
   replicas: 1
+  strategy:
+    type: Recreate  # RWO data volume — never two writers
   selector:
     matchLabels:
       app: orchestrator-api
@@ -15,11 +33,18 @@ spec:
       labels:
         app: orchestrator-api
     spec:
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: modelect-data
       containers:
         - name: api
           image: image-registry.openshift-image-registry.svc:5000/llm-orchestrator/orchestrator-api:latest
           ports:
             - containerPort: 8000
+          volumeMounts:
+            - name: data
+              mountPath: /opt/app/data
           resources:
             requests:
               cpu: 100m
