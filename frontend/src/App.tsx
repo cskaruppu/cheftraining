@@ -169,6 +169,7 @@ interface Me {
   username: string;
   role: "admin" | "user";
   team_id: string | null;
+  demo_seed?: boolean;
 }
 
 const STORAGE_KEY = "modelect.nav.open";
@@ -231,6 +232,13 @@ export default function App() {
     setMe(null);
   };
 
+  const crumb = (() => {
+    for (const g of [...ADMIN_GROUPS, ...USER_GROUPS])
+      for (const i of g.items)
+        if (i.to === location.pathname) return { group: g.label, page: i.label };
+    return null;
+  })();
+
   const toggle = (label: string) =>
     setOpen((o) => {
       const next = { ...o, [label]: !o[label] };
@@ -245,18 +253,21 @@ export default function App() {
   return (
     <div className="flex min-h-screen">
       <aside className="w-60 shrink-0 border-r border-edge bg-surface flex flex-col">
-        <div className="flex items-center gap-3 px-5 py-5">
-          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-s1 to-[#1c5cab] grid place-items-center text-white font-semibold text-sm shadow-lg shadow-s1/20">
-            M
-          </div>
-          <div>
-            <div className="text-[15px] font-semibold tracking-tight leading-none">
-              Modelect
+        <div className="px-5 pt-5 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-s1 to-[#1c5cab] grid place-items-center text-white font-semibold text-sm shadow-lg shadow-s1/25 ring-1 ring-white/10">
+              M
             </div>
-            <div className="text-[10px] text-muted mt-1 tracking-wide uppercase">
-              LLM Orchestrator
+            <div>
+              <div className="text-[15px] font-semibold tracking-tight leading-none">
+                Modelect
+              </div>
+              <div className="text-[10px] text-muted mt-1 tracking-[0.14em] uppercase">
+                LLM Orchestrator
+              </div>
             </div>
           </div>
+          <div className="mt-4 h-px bg-gradient-to-r from-s1/70 via-s3/40 to-transparent" />
         </div>
 
         <nav className="flex-1 px-3 pb-4 overflow-y-auto">
@@ -312,28 +323,67 @@ export default function App() {
           })}
         </nav>
 
-        <div className="px-5 py-4 border-t border-edge">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[12px] text-ink2">
-              {me.username}
-              <span className="text-muted">
-                {" · "}{isAdmin ? "admin" : me.team_id === me.username ? "user" : me.team_id}
-              </span>
-            </span>
-            <button onClick={logout} className="text-[11px] text-muted hover:text-ink transition-colors">
-              sign out
-            </button>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] text-muted">
-              Gateway <code className="text-ink2">/v1</code>
-            </span>
-            <span className="chip !text-[10px]">demo · v1.5</span>
+        <div className="border-t border-edge">
+          <div className="h-px bg-gradient-to-r from-s1/50 via-s3/30 to-transparent" />
+          <div className="px-5 py-3 flex items-center justify-between">
+            <span className="text-[10px] text-muted tracking-wide">© 2026 Modelect</span>
+            <span className="chip !text-[10px] !py-0">v1.7</span>
           </div>
         </div>
       </aside>
 
-      <main className="flex-1 px-8 py-7 max-w-[1240px]">
+      <main className="flex-1 flex flex-col min-h-screen min-w-0">
+        <header className="sticky top-0 z-20 border-b border-edge bg-page/80 backdrop-blur-md">
+          <div className="h-[2px] w-full bg-gradient-to-r from-s1 via-s3/70 to-transparent" />
+          <div className="flex items-center justify-between px-8 h-12">
+            <div className="text-xs text-muted flex items-center min-w-0">
+              {crumb ? (
+                <>
+                  <span className="uppercase tracking-[0.12em] text-[10px]">{crumb.group}</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" className="mx-2 text-grid shrink-0">
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                  <span className="text-ink2 truncate">{crumb.page}</span>
+                </>
+              ) : (
+                <span className="text-ink2">Modelect</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2.5 shrink-0">
+              {me.demo_seed === false ? (
+                <span className="chip !text-[10px]" title="no seeded history — every number comes from real traffic">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-good mr-1.5 animate-pulse" />
+                  live data
+                </span>
+              ) : (
+                <span className="chip !text-[10px]" title="includes seeded demo history — set DEMO_SEED=0 for real traffic only">
+                  demo data
+                </span>
+              )}
+              <span className={`chip !text-[10px] ${isAdmin ? "border-s1/50 text-s1" : ""}`}>
+                {isAdmin ? "admin" : "user"}
+              </span>
+              <div className="flex items-center gap-2 pl-2.5 border-l border-edge">
+                <div className="h-7 w-7 rounded-full bg-raised border border-edge grid place-items-center text-[11px] font-medium text-ink2 uppercase">
+                  {me.username.slice(0, 1)}
+                </div>
+                <span className="text-xs text-ink2 max-w-[140px] truncate">{me.username}</span>
+                <button onClick={logout} title="sign out"
+                  className="text-muted hover:text-ink transition-colors p-1">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <path d="m16 17 5-5-5-5" />
+                    <path d="M21 12H9" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div className="flex-1 px-8 py-7 max-w-[1240px] w-full">
         <Routes>
           <Route path="/" element={<Navigate to={home} replace />} />
           <Route path="/dashboard" element={<AdminOnly><Dashboard /></AdminOnly>} />
@@ -350,6 +400,18 @@ export default function App() {
           <Route path="/tokenomics" element={<AdminOnly><Tokenomics /></AdminOnly>} />
           <Route path="/settings" element={<AdminOnly><Settings /></AdminOnly>} />
         </Routes>
+        </div>
+
+        <footer className="border-t border-edge px-8 py-4 flex flex-wrap items-center justify-between gap-3">
+          <span className="text-[11px] text-muted">
+            Modelect<span className="text-s1">.</span> — decide · deploy · integrate · govern
+          </span>
+          <div className="flex items-center gap-2 text-[11px]">
+            <a href="/docs" target="_blank" rel="noreferrer" className="chip hover:!text-ink transition">API docs</a>
+            <span className="chip">gateway /v1 · OpenAI-compatible</span>
+            <span className="chip">v1.7</span>
+          </div>
+        </footer>
       </main>
     </div>
   );
