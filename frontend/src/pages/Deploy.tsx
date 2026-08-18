@@ -24,6 +24,9 @@ interface Deployment {
   cluster_name: string | null;
   status: string;
   progress: number;
+  backend: "simulated" | "agent";
+  real_endpoint: string;
+  message: string;
   endpoint_path: string;
 }
 
@@ -268,6 +271,17 @@ export default function Deploy() {
                     {d.profile.est_cost_hr.toFixed(2)}/hr
                     {d.cluster_name && (
                       <> · <span className="text-ink2">{d.cluster_name}</span></>
+                    )}
+                    {d.backend === "agent" && (
+                      <span className="chip !ml-2 !py-0 !px-1.5 !text-[10px] border-s3/50 text-s3"
+                        title={d.real_endpoint
+                          ? `real vLLM serving at ${d.real_endpoint} — the gateway proxies to it`
+                          : "executed by the cluster's Modelect agent (real vLLM pod)"}>
+                        live vLLM
+                      </span>
+                    )}
+                    {d.status === "error" && d.message && (
+                      <span className="text-crit"> · {d.message}</span>
                     )}
                   </div>
                 </div>

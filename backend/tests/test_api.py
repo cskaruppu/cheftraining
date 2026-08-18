@@ -375,6 +375,54 @@ def test_agent_reporting_and_real_cluster_lifecycle():
     assert lab["gpus"][0]["free"] == 8
 
 
+def test_work_orders_and_real_backend_fallback():
+    token = client.get("/api/agents/token").json()["token"]
+    # deploying onto an agent cluster queues a work order for its agent
+    dep = client.post("/api/deployments", json={
+        "model_id": "phi-4", "profile_id": "balanced",
+        "cluster_id": "caaslab", "name": "lab-phi"}).json()
+    assert dep["backend"] == "agent" and dep["status"] == "scheduling"
+
+    assert client.get("/api/agent/work?cluster_id=caaslab").status_code == 401
+    orders = client.get("/api/agent/work?cluster_id=caaslab",
+                        headers={"X-Agent-Token": token}).json()["orders"]
+    order = next(o for o in orders if o["id"] == dep["id"])
+    assert order["action"] == "deploy" and order["state"] == "pending"
+    assert order["hf_repo"] == "microsoft/phi-4" and order["gpu_count"] == 1
+
+    # agent lifecycle: starting -> ready (endpoint reported)
+    client.post(f"/api/agent/work/{dep['id']}", json={"state": "starting"},
+                headers={"X-Agent-Token": token})
+    d = next(x for x in client.get("/api/deployments").json()["deployments"]
+             if x["id"] == dep["id"])
+    assert d["status"] == "warming_up"
+    client.post(f"/api/agent/work/{dep['id']}",
+                json={"state": "ready", "endpoint": "http://127.0.0.1:9"},
+                headers={"X-Agent-Token": token})
+    d = next(x for x in client.get("/api/deployments").json()["deployments"]
+             if x["id"] == dep["id"])
+    assert d["status"] == "ready" and d["real_endpoint"] == "http://127.0.0.1:9"
+
+    # gateway tries the real endpoint, falls back honestly when unreachable
+    r = client.post("/v1/chat/completions", json={
+        "model": "phi-4", "messages": [{"role": "user", "content": "hi"}]}).json()
+    backend = r["modelect"]["receipt"]["backend"]
+    assert backend["type"] == "simulated-fallback"
+    assert backend["endpoint"] == "http://127.0.0.1:9"
+
+    # delete flows to the agent as a teardown order, confirmed -> gone
+    client.delete(f"/api/deployments/{dep['id']}")
+    orders = client.get("/api/agent/work?cluster_id=caaslab",
+                        headers={"X-Agent-Token": token}).json()["orders"]
+    tear = next(o for o in orders if o["id"] == dep["id"])
+    assert tear["action"] == "delete"
+    client.post(f"/api/agent/work/{dep['id']}", json={"state": "deleted"},
+                headers={"X-Agent-Token": token})
+    orders = client.get("/api/agent/work?cluster_id=caaslab",
+                        headers={"X-Agent-Token": token}).json()["orders"]
+    assert all(o["id"] != dep["id"] for o in orders)
+
+
 def test_deployment_consumes_and_releases_gpu_capacity():
     def free_h100(cluster_id):
         fleet = client.get("/api/clusters").json()["clusters"]

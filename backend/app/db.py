@@ -82,6 +82,20 @@ agents_t = Table(
     Column("operator_detected", Boolean),
 )
 
+work_t = Table(
+    "agent_work", metadata,
+    Column("id", String(16), primary_key=True),      # = deployment id
+    Column("cluster_id", String(80), index=True),
+    Column("model_id", String(80)),
+    Column("hf_repo", String(200)),
+    Column("gpu_count", Integer),
+    Column("action", String(10)),    # deploy | delete
+    Column("state", String(20)),     # pending|starting|pulling|ready|error|deleted
+    Column("endpoint", String(300)),
+    Column("message", String(300)),
+    Column("updated", Float),
+)
+
 users_t = Table(
     "users", metadata,
     Column("username", String(80), primary_key=True),

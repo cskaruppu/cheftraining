@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 import ssl
 
@@ -121,20 +122,158 @@ def collect() -> dict:
     }
 
 
-def report(payload: dict):
-    url = os.environ["MODELECT_URL"].rstrip("/") + "/api/agent/report"
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        url, data=data, method="POST",
-        headers={"Content-Type": "application/json",
-                 "X-Agent-Token": os.environ["MODELECT_AGENT_TOKEN"]})
-    ctx = None
+def _cp_ctx():
     if os.environ.get("INSECURE_TLS") == "1":
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+        return ctx
+    return None
+
+
+def _cp_call(path: str, payload: dict | None = None, method: str = "POST"):
+    url = os.environ["MODELECT_URL"].rstrip("/") + path
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={"Content-Type": "application/json",
+                 "X-Agent-Token": os.environ["MODELECT_AGENT_TOKEN"]})
+    with urllib.request.urlopen(req, context=_cp_ctx(), timeout=20) as resp:
         return json.load(resp)
+
+
+def report(payload: dict):
+    return _cp_call("/api/agent/report", payload)
+
+
+# ------------------- serving execution (Phase B2) ----------------------
+NAMESPACE = os.environ.get("AGENT_NAMESPACE", "modelect-agent")
+SERVING_IMAGE = os.environ.get("SERVING_IMAGE", "vllm/vllm-openai:latest")
+
+
+def _kube_write(method: str, path: str, body: dict | None = None) -> int:
+    with open(f"{SA_DIR}/token") as f:
+        token = f.read().strip()
+    ctx = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        KUBE_HOST + path, data=data, method=method,
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=20) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 409):  # missing on delete / already exists
+            return e.code
+        raise
+
+
+def _serving_manifests(order: dict, openshift: bool) -> list[tuple[str, dict]]:
+    name = f"modelect-{order['id']}"
+    labels = {"app": name, "app.kubernetes.io/part-of": "modelect"}
+    dep = {
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"name": name, "labels": labels},
+        "spec": {
+            "replicas": 1, "selector": {"matchLabels": {"app": name}},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {"containers": [{
+                    "name": "vllm", "image": SERVING_IMAGE,
+                    "args": ["--model", order["hf_repo"],
+                             "--served-model-name", order["model_id"],
+                             "--max-model-len", "8192"],
+                    "ports": [{"containerPort": 8000}],
+                    "env": ([{"name": "HUGGING_FACE_HUB_TOKEN",
+                              "valueFrom": {"secretKeyRef": {
+                                  "name": "hf-token", "key": "token",
+                                  "optional": True}}}]),
+                    "resources": {"limits": {"nvidia.com/gpu": order["gpu_count"]}},
+                    "readinessProbe": {"httpGet": {"path": "/health", "port": 8000},
+                                       "initialDelaySeconds": 30,
+                                       "periodSeconds": 15},
+                }]},
+            },
+        },
+    }
+    svc = {"apiVersion": "v1", "kind": "Service",
+           "metadata": {"name": name, "labels": labels},
+           "spec": {"selector": {"app": name},
+                    "ports": [{"port": 8000, "targetPort": 8000}]}}
+    out = [(f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments", dep),
+           (f"/api/v1/namespaces/{NAMESPACE}/services", svc)]
+    if openshift:
+        route = {"apiVersion": "route.openshift.io/v1", "kind": "Route",
+                 "metadata": {"name": name, "labels": labels},
+                 "spec": {"to": {"kind": "Service", "name": name},
+                          "port": {"targetPort": 8000}}}
+        out.append((f"/apis/route.openshift.io/v1/namespaces/{NAMESPACE}/routes", route))
+    return out
+
+
+def _order_endpoint(order: dict, openshift: bool) -> str:
+    name = f"modelect-{order['id']}"
+    if openshift:
+        try:
+            r = _kube_get(f"/apis/route.openshift.io/v1/namespaces/{NAMESPACE}/routes/{name}")
+            host = r.get("spec", {}).get("host")
+            if host:
+                return f"http://{host}"
+        except Exception:
+            pass
+    return f"http://{name}.{NAMESPACE}.svc:8000"
+
+
+def _order_state(order: dict) -> str:
+    name = f"modelect-{order['id']}"
+    try:
+        d = _kube_get(f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}")
+    except Exception:
+        return "starting"
+    status = d.get("status", {})
+    if status.get("availableReplicas", 0) >= 1:
+        return "ready"
+    return "pulling"  # image pull + weight download dominate startup
+
+
+def process_work(openshift: bool):
+    orders = _cp_call(f"/api/agent/work?cluster_id={os.environ['CLUSTER_ID']}",
+                      method="GET")["orders"]
+    for order in orders:
+        name = f"modelect-{order['id']}"
+        try:
+            if order["action"] == "delete":
+                for kind, path in [
+                        ("deployments", f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}"),
+                        ("services", f"/api/v1/namespaces/{NAMESPACE}/services/{name}"),
+                        ("routes", f"/apis/route.openshift.io/v1/namespaces/{NAMESPACE}/routes/{name}")]:
+                    _kube_write("DELETE", path)
+                _cp_call(f"/api/agent/work/{order['id']}", {"state": "deleted"})
+                print(f"work {order['id']}: deleted {name}", flush=True)
+                continue
+            if not order["hf_repo"]:
+                _cp_call(f"/api/agent/work/{order['id']}",
+                         {"state": "error", "message": "model has no HF repo mapping"})
+                continue
+            if order["state"] == "pending":
+                for path, body in _serving_manifests(order, openshift):
+                    _kube_write("POST", path, body)
+                _cp_call(f"/api/agent/work/{order['id']}", {"state": "starting"})
+                print(f"work {order['id']}: applied {name}", flush=True)
+            else:
+                state = _order_state(order)
+                payload = {"state": state}
+                if state == "ready":
+                    payload["endpoint"] = _order_endpoint(order, openshift)
+                _cp_call(f"/api/agent/work/{order['id']}", payload)
+        except Exception as e:
+            try:
+                _cp_call(f"/api/agent/work/{order['id']}",
+                         {"state": "error", "message": str(e)[:280]})
+            except Exception:
+                pass
+            print(f"work {order['id']} failed: {e}", file=sys.stderr, flush=True)
 
 
 def main():
@@ -146,13 +285,19 @@ def main():
     print(f"modelect-agent starting: cluster={os.environ['CLUSTER_ID']} "
           f"-> {os.environ['MODELECT_URL']} every {interval}s", flush=True)
     while True:
+        openshift = False
         try:
             payload = collect()
+            openshift = payload["platform"] == "openshift"
             result = report(payload)
             gpus = ", ".join(f"{g['count']}x {g['family']}" for g in payload["gpus"]) or "no GPUs"
             print(f"reported: {payload['nodes']} nodes · {gpus} · {result}", flush=True)
         except Exception as e:  # keep heartbeating through transient errors
             print(f"report failed: {e}", file=sys.stderr, flush=True)
+        try:
+            process_work(openshift)
+        except Exception as e:
+            print(f"work loop failed: {e}", file=sys.stderr, flush=True)
         time.sleep(interval)
 
 

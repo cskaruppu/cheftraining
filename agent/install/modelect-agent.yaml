@@ -40,6 +40,37 @@ subjects:
     name: modelect-agent
     namespace: modelect-agent
 ---
+# serving execution: the agent creates vLLM pods in its own namespace only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: modelect-agent-serve
+  namespace: modelect-agent
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, delete, patch]
+  - apiGroups: [""]
+    resources: [services, pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [route.openshift.io]
+    resources: [routes]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: modelect-agent-serve
+  namespace: modelect-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: modelect-agent-serve
+subjects:
+  - kind: ServiceAccount
+    name: modelect-agent
+    namespace: modelect-agent
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -78,6 +109,9 @@ spec:
             - {name: INTERVAL_S, value: "30"}
             # lab clusters with self-signed routes: set to "1"
             - {name: INSECURE_TLS, value: "0"}
+            # vLLM image used for real model serving (Phase B2)
+            - {name: SERVING_IMAGE, value: "vllm/vllm-openai:latest"}
+            # gated HF models: oc -n modelect-agent create secret generic hf-token --from-literal=token=hf_...
           resources:
             requests: {cpu: 20m, memory: 32Mi}
             limits: {cpu: 100m, memory: 64Mi}

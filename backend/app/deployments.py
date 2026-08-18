@@ -13,7 +13,7 @@ import uuid
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import insert, select
 
-from . import clusters
+from . import agents, clusters, work
 from .catalog import MODELS_BY_ID
 from .db import deployments_t, engine
 
@@ -107,6 +107,12 @@ def create(model_id: str, profile_id: str, name: str,
     }
     with engine.begin() as conn:
         conn.execute(insert(deployments_t).values(**row))
+
+    # real (agent) cluster: queue the serving work order for its agent
+    if cluster_id in {c["id"] for c in agents.real_clusters()}:
+        gpu_count, _fam = clusters.parse_profile_gpus(profile["gpus"])
+        work.enqueue(dep_id, cluster_id, model_id,
+                     model.get("hf_repo"), gpu_count)
     return _public(row)
 
 
@@ -121,9 +127,22 @@ def _status(created_at: float) -> tuple[str, int]:
     return "ready", 100
 
 
+_WORK_STATUS = {"pending": ("scheduling", 10), "starting": ("warming_up", 60),
+                "pulling": ("pulling_weights", 40), "ready": ("ready", 100),
+                "error": ("error", 100)}
+
+
 def _public(row) -> dict:
     r = dict(row) if not isinstance(row, dict) else row
     status, progress = _status(r["created_at"])
+    backend, real_endpoint, message = "simulated", "", ""
+    order = work.state_for(r["id"])
+    if order and order["action"] == "deploy":
+        # agent-executed deployment: real state beats the simulated timeline
+        status, progress = _WORK_STATUS.get(order["state"], ("scheduling", 10))
+        backend = "agent"
+        real_endpoint = order["endpoint"] or ""
+        message = order["message"] or ""
     return {
         "id": r["id"], "name": r["name"],
         "model_id": r["model_id"], "model_name": r["model_name"],
@@ -131,6 +150,7 @@ def _public(row) -> dict:
         "api_key": r["api_key"],
         "cluster_id": r["cluster_id"], "cluster_name": r["cluster_name"],
         "status": status, "progress": progress,
+        "backend": backend, "real_endpoint": real_endpoint, "message": message,
         "endpoint_path": "/v1/chat/completions",
     }
 
@@ -150,6 +170,7 @@ def delete(dep_id: str) -> bool:
         conn.execute(sa_delete(deployments_t).where(deployments_t.c.id == dep_id))
     profile = json.loads(row["profile_json"])
     clusters.release(row["cluster_id"], profile["gpus"])
+    work.request_delete(dep_id)  # agent tears down the serving pod
     return True
 
 

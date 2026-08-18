@@ -221,10 +221,24 @@ _SIZING = {
 }
 _SIZE_RANK = {"slm": 0, "mid": 1, "large": 2}
 
+# Hugging Face repos for the self-hostable models — what the agent's
+# vLLM serving pod actually loads (demo mapping; verify licenses/gating).
+_HF_REPOS = {
+    "llama-4-maverick": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+    "llama-4-scout": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+    "mistral-small-3.2": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+    "deepseek-v3.2": "deepseek-ai/DeepSeek-V3.2",
+    "deepseek-r1": "deepseek-ai/DeepSeek-R1",
+    "qwen3-235b": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    "phi-4": "microsoft/phi-4",
+    "vllm-local-llama-3.3-70b": "meta-llama/Llama-3.3-70B-Instruct",
+}
+
 for _m in MODELS:
     _params, _cls = _SIZING[_m["id"]]
     _m["params_b"] = _params
     _m["size_class"] = _cls
+    _m["hf_repo"] = _HF_REPOS.get(_m["id"])
 
 MODELS_BY_ID = {m["id"]: m for m in MODELS}
 

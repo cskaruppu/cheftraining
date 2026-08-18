@@ -20,8 +20,10 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import httpx
+
 from . import (agents, analytics, auth, clusters, config, deployments, evals,
-               integration, migrate, registry, tokenomics)
+               integration, migrate, registry, tokenomics, work)
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
@@ -39,7 +41,7 @@ analytics.seed()
 # Paths that never require a portal session: health, the OpenAI-compatible
 # gateway (team API keys are its auth), login, agent reports (enrollment
 # token is their auth), and the static UI.
-_SESSION_EXEMPT = ("/healthz", "/v1/", "/api/auth/", "/api/agent/report")
+_SESSION_EXEMPT = ("/healthz", "/v1/", "/api/auth/", "/api/agent/")
 
 
 @app.middleware("http")
@@ -328,6 +330,32 @@ def agents_token(request: Request):
     return {"token": agents.enroll_token()}
 
 
+@app.get("/api/agent/work")
+def agent_work(cluster_id: str,
+               x_agent_token: str | None = Header(default=None)):
+    if not agents.token_valid(x_agent_token):
+        raise HTTPException(401, "invalid or missing agent enrollment token")
+    return {"orders": work.orders_for(cluster_id)}
+
+
+class WorkStatus(BaseModel):
+    state: str
+    endpoint: str = ""
+    message: str = ""
+
+
+@app.post("/api/agent/work/{order_id}")
+def agent_work_status(order_id: str, req: WorkStatus,
+                      x_agent_token: str | None = Header(default=None)):
+    if not agents.token_valid(x_agent_token):
+        raise HTTPException(401, "invalid or missing agent enrollment token")
+    if req.state not in ("starting", "pulling", "ready", "error", "deleted"):
+        raise HTTPException(400, "invalid state")
+    if not work.update_state(order_id, req.state, req.endpoint, req.message):
+        raise HTTPException(404, "unknown work order")
+    return {"ok": True}
+
+
 class PlacementRequest(BaseModel):
     model_id: str
     profile_id: str
@@ -543,6 +571,44 @@ async def chat_completions(req: ChatCompletionRequest,
                     f"{model['id']} served by {degraded_to['id']}")
                 model = degraded_to
 
+    # ---- real serving backend (Phase B2) ------------------------------
+    # If an agent-deployed vLLM endpoint is ready for this model, proxy
+    # the request there; on failure fall back to simulation, honestly
+    # labeled in the receipt.
+    backend_info = {"type": "simulated"}
+    real_endpoint = work.ready_endpoint_for_model(model["id"])
+    if real_endpoint and not req.stream:
+        try:
+            upstream = httpx.post(
+                f"{real_endpoint.rstrip('/')}/v1/chat/completions",
+                json={"model": model["id"],
+                      "messages": [m.model_dump() for m in req.messages]},
+                timeout=120, verify=False)
+            upstream.raise_for_status()
+            body = upstream.json()
+            usage = body.get("usage", {})
+            analytics.record(model["id"],
+                             usage.get("prompt_tokens", 0),
+                             usage.get("completion_tokens", 0),
+                             int(upstream.elapsed.total_seconds() * 1000),
+                             team_id=team["id"] if team else None)
+            body["modelect"] = {
+                "routed": req.model in ("auto", "cascade"),
+                "receipt": {
+                    **routing_receipt(model, usage.get("prompt_tokens", 0),
+                                      usage.get("completion_tokens", 0),
+                                      routed=req.model in ("auto", "cascade")),
+                    "backend": {"type": "real", "endpoint": real_endpoint},
+                    **({"enforcement": enforcement} if enforcement else {}),
+                    **({"cascade": cascade_info} if cascade_info else {}),
+                },
+            }
+            return body
+        except Exception as e:
+            backend_info = {"type": "simulated-fallback",
+                            "endpoint": real_endpoint,
+                            "error": str(e)[:200]}
+
     sim = _simulate_completion(
         model, prompt,
         team_id=team["id"] if team else None,
@@ -572,6 +638,7 @@ async def chat_completions(req: ChatCompletionRequest,
                         "receipt": {**routing_receipt(model, sim["tokens_in"],
                                                       sim["tokens_out"],
                                                       routed=req.model in ("auto", "cascade")),
+                                    "backend": backend_info,
                                     **({"enforcement": enforcement} if enforcement else {}),
                                     **({"cascade": cascade_info} if cascade_info else {})}},
         }
