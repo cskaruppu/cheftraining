@@ -7,6 +7,8 @@ interface GpuPool {
   count: number;
   used: number;
   free: number;
+  virtual?: boolean;
+  mode?: string;
 }
 
 interface Cluster {
@@ -22,6 +24,7 @@ interface Cluster {
   utilization_pct: number;
   agent_status: string;
   last_heartbeat_s: number;
+  source: "agent" | "simulated";
 }
 
 interface DeploymentLite {
@@ -36,6 +39,8 @@ export default function Clusters() {
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [deployments, setDeployments] = useState<DeploymentLite[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [agentToken, setAgentToken] = useState("");
+  const [showConnect, setShowConnect] = useState(false);
 
   const refresh = () =>
     Promise.all([
@@ -49,6 +54,10 @@ export default function Clusters() {
 
   useEffect(() => {
     refresh();
+    fetch("/api/agents/token")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setAgentToken(d.token))
+      .catch(() => {});
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
   }, []);
@@ -63,10 +72,38 @@ export default function Clusters() {
 
   return (
     <div>
-      <PageHeader
-        title="GPU Fleet"
-        sub="Every registered OpenShift and Kubernetes cluster with its live GPU inventory — one pane for your whole estate (simulated agents; production uses OCM/ACM-style pull agents)"
-      />
+      <div className="flex items-start justify-between gap-4">
+        <PageHeader
+          title="GPU Fleet"
+          sub="Every registered OpenShift and Kubernetes cluster with its live GPU inventory — install the Modelect agent on any GPU cluster and it appears here"
+        />
+        {agentToken && (
+          <button className="btn-ghost mt-1 shrink-0" onClick={() => setShowConnect(!showConnect)}>
+            {showConnect ? "close" : "+ Connect a cluster"}
+          </button>
+        )}
+      </div>
+
+      {showConnect && agentToken && (
+        <div className="card mb-6 border-s1/40">
+          <h2 className="text-sm font-medium mb-2">Connect a GPU cluster</h2>
+          <p className="text-xs text-ink2 mb-3">
+            Run this against the cluster you want to register (outbound-only agent;
+            read-only RBAC on nodes; detects dedicated GPUs, MIG slices and
+            time-sliced vGPUs from the NVIDIA GPU Operator):
+          </p>
+          <pre className="bg-page border border-edge rounded-lg px-3 py-2.5 text-[11.5px] leading-relaxed text-ink2 overflow-x-auto">{`sed -e 's|__CONTROL_PLANE_URL__|${window.location.origin}|' \\
+    -e 's|__AGENT_TOKEN__|${agentToken}|' \\
+    -e 's|__CLUSTER_ID__|my-gpu-cluster|' \\
+    -e 's|__QUAY_NS__|<your-quay-user>|' \\
+    agent/install/modelect-agent.yaml | oc apply -f -`}</pre>
+          <p className="text-[11px] text-muted mt-2">
+            Enrollment token: <code className="text-ink2">{agentToken}</code> — full
+            instructions in <code className="text-ink2">agent/README.md</code>. The
+            cluster appears here within ~30 seconds, labeled "live agent".
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatTile label="Clusters" value={clusters.length} hint="all agents connected" />
@@ -88,9 +125,16 @@ export default function Clusters() {
                     {c.region}
                   </div>
                 </div>
-                <span className="chip border-good/40 text-good">
-                  ● agent · {c.last_heartbeat_s}s ago
-                </span>
+                <div className="flex flex-col items-end gap-1">
+                  <span className={`chip ${c.agent_status === "connected" ? "border-good/40 text-good" : "border-warn/40 text-warn"}`}>
+                    ● agent · {c.last_heartbeat_s}s ago
+                  </span>
+                  {c.source === "agent" ? (
+                    <span className="chip border-s1/50 text-s1">live agent</span>
+                  ) : (
+                    <span className="chip">simulated</span>
+                  )}
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-1.5">
@@ -107,7 +151,15 @@ export default function Clusters() {
                   return (
                     <div key={g.family}>
                       <div className="flex justify-between text-xs mb-1">
-                        <span className="text-ink2">{g.type}</span>
+                        <span className="text-ink2">
+                          {g.type}
+                          {g.virtual && (
+                            <span className="chip !ml-1.5 !py-0 !px-1.5 !text-[10px] border-s3/50 text-s3"
+                              title={`virtual GPUs (${g.mode}) — several models share one physical card`}>
+                              vGPU
+                            </span>
+                          )}
+                        </span>
                         <span className="text-muted tabular-nums">
                           {g.used}/{g.count} used · {g.free} free
                         </span>

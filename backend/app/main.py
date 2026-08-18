@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import (analytics, auth, clusters, config, deployments, evals,
+from . import (agents, analytics, auth, clusters, config, deployments, evals,
                integration, migrate, registry, tokenomics)
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
@@ -37,8 +37,9 @@ app.add_middleware(
 analytics.seed()
 
 # Paths that never require a portal session: health, the OpenAI-compatible
-# gateway (team API keys are its auth), login, and the static UI.
-_SESSION_EXEMPT = ("/healthz", "/v1/", "/api/auth/")
+# gateway (team API keys are its auth), login, agent reports (enrollment
+# token is their auth), and the static UI.
+_SESSION_EXEMPT = ("/healthz", "/v1/", "/api/auth/", "/api/agent/report")
 
 
 @app.middleware("http")
@@ -296,6 +297,32 @@ def post_eval(req: EvalRequest):
 @app.get("/api/clusters")
 def list_clusters():
     return {"clusters": clusters.snapshot()}
+
+
+class AgentReport(BaseModel):
+    cluster_id: str
+    name: str = ""
+    platform: str = "kubernetes"
+    version: str = ""
+    region: str = ""
+    residency: str = ""
+    cost_factor: float = 1.0
+    nodes: int = 0
+    gpus: list[dict] = []
+
+
+@app.post("/api/agent/report")
+def agent_report(req: AgentReport,
+                 x_agent_token: str | None = Header(default=None)):
+    if not agents.token_valid(x_agent_token):
+        raise HTTPException(401, "invalid or missing agent enrollment token")
+    return agents.upsert_report(req.model_dump())
+
+
+@app.get("/api/agents/token")
+def agents_token(request: Request):
+    # admin-only via ADMIN_RULES; shown on the GPU Fleet 'connect' card
+    return {"token": agents.enroll_token()}
 
 
 class PlacementRequest(BaseModel):

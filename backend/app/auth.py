@@ -115,6 +115,7 @@ ADMIN_RULES = [
     ("POST", "/api/registry/sync"),
     ("GET", "/api/tokenomics"),
     ("DELETE", "/api/deployments/"),
+    ("GET", "/api/agents/token"),
 ]
 
 

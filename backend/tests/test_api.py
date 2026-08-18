@@ -323,6 +323,42 @@ def test_fleet_and_placement():
     assert any("residency" in r for c in excluded for r in c["reasons"])
 
 
+def test_agent_reporting_and_real_cluster_lifecycle():
+    token = client.get("/api/agents/token").json()["token"]
+    assert token.startswith("ma-")
+    # bad/missing token rejected
+    assert client.post("/api/agent/report", json={"cluster_id": "x"}).status_code == 401
+    # a real GPU cluster reports in (with a time-sliced vGPU pool)
+    report = {
+        "cluster_id": "caaslab", "name": "CaaS Lab", "platform": "openshift",
+        "version": "v1.29.6", "region": "lab", "residency": "us",
+        "cost_factor": 1.0, "nodes": 5,
+        "gpus": [
+            {"family": "L40S", "type": "NVIDIA L40S 48GB · time-sliced x4",
+             "count": 8, "virtual": True, "mode": "time-slice"},
+        ],
+    }
+    r = client.post("/api/agent/report", json=report,
+                    headers={"X-Agent-Token": token})
+    assert r.status_code == 200
+    fleet = client.get("/api/clusters").json()["clusters"]
+    lab = next(c for c in fleet if c["id"] == "caaslab")
+    assert lab["source"] == "agent" and lab["agent_status"] == "connected"
+    assert lab["gpus"][0]["virtual"] is True and lab["gpus"][0]["free"] == 8
+    # placement can target the real cluster explicitly, deploy consumes vGPUs
+    dep = client.post("/api/deployments", json={
+        "model_id": "mistral-small-3.2", "profile_id": "balanced",
+        "cluster_id": "caaslab", "name": "lab-mistral"}).json()
+    assert dep["cluster_name"] == "CaaS Lab"
+    fleet = client.get("/api/clusters").json()["clusters"]
+    lab = next(c for c in fleet if c["id"] == "caaslab")
+    assert lab["gpus"][0]["used"] == 1 and lab["gpus"][0]["free"] == 7
+    client.delete(f"/api/deployments/{dep['id']}")
+    fleet = client.get("/api/clusters").json()["clusters"]
+    lab = next(c for c in fleet if c["id"] == "caaslab")
+    assert lab["gpus"][0]["free"] == 8
+
+
 def test_deployment_consumes_and_releases_gpu_capacity():
     def free_h100(cluster_id):
         fleet = client.get("/api/clusters").json()["clusters"]

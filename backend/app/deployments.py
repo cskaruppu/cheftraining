@@ -87,7 +87,8 @@ def create(model_id: str, profile_id: str, name: str,
             raise ValueError("no cluster has capacity for this profile"
                              + (f" with residency '{residency}'" if residency else ""))
         cluster_id = placement["recommended"]["cluster_id"]
-    if cluster_id not in clusters.CLUSTERS_BY_ID:
+    cluster_name = clusters.get_cluster_name(cluster_id)
+    if cluster_name is None:
         raise ValueError("unknown cluster")
     if not clusters.allocate(cluster_id, profile["gpus"]):
         raise ValueError(f"cluster '{cluster_id}' lacks free GPUs for this profile")
@@ -100,7 +101,7 @@ def create(model_id: str, profile_id: str, name: str,
         "model_name": model["name"],
         "profile_json": json.dumps(profile),
         "cluster_id": cluster_id,
-        "cluster_name": clusters.CLUSTERS_BY_ID[cluster_id]["name"],
+        "cluster_name": cluster_name,
         "api_key": f"mk-{secrets.token_hex(16)}",
         "created_at": time.time(),
     }

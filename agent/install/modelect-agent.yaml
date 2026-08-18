@@ -1,0 +1,83 @@
+# Modelect agent — install on any OpenShift/Kubernetes cluster with GPUs.
+#
+# 1. Replace the four __PLACEHOLDERS__ below (or use the sed one-liner in
+#    agent/README.md; the token is shown on the GPU Fleet page).
+# 2. oc apply -f modelect-agent.yaml   (or kubectl apply)
+#
+# The agent is outbound-only: it reads node GPU inventory (including MIG
+# slices and time-sliced vGPUs from the NVIDIA GPU Operator) and reports
+# to the control plane every 30s. RBAC below is read-only on nodes.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: modelect-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: modelect-agent
+  namespace: modelect-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: modelect-agent-read
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: modelect-agent-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: modelect-agent-read
+subjects:
+  - kind: ServiceAccount
+    name: modelect-agent
+    namespace: modelect-agent
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: modelect-agent
+  namespace: modelect-agent
+stringData:
+  MODELECT_URL: "__CONTROL_PLANE_URL__"
+  MODELECT_AGENT_TOKEN: "__AGENT_TOKEN__"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modelect-agent
+  namespace: modelect-agent
+  labels: {app: modelect-agent, app.kubernetes.io/part-of: modelect}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: modelect-agent}
+  template:
+    metadata:
+      labels: {app: modelect-agent}
+    spec:
+      serviceAccountName: modelect-agent
+      containers:
+        - name: agent
+          image: quay.io/__QUAY_NS__/modelect-agent:latest
+          envFrom:
+            - secretRef: {name: modelect-agent}
+          env:
+            - {name: CLUSTER_ID, value: "__CLUSTER_ID__"}
+            - {name: CLUSTER_NAME, value: "__CLUSTER_ID__"}
+            - {name: REGION, value: ""}
+            - {name: RESIDENCY, value: ""}
+            - {name: COST_FACTOR, value: "1.0"}
+            - {name: INTERVAL_S, value: "30"}
+            # lab clusters with self-signed routes: set to "1"
+            - {name: INSECURE_TLS, value: "0"}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}

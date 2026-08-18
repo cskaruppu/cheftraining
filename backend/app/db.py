@@ -66,6 +66,20 @@ teams_t = Table(
     Column("allowed_tiers", String(40), nullable=True),  # e.g. "slm,mid"
 )
 
+agents_t = Table(
+    "agent_clusters", metadata,
+    Column("cluster_id", String(80), primary_key=True),
+    Column("name", String(120)),
+    Column("platform", String(20)),
+    Column("version", String(40)),
+    Column("region", String(40)),
+    Column("residency", String(20)),
+    Column("cost_factor", Float),
+    Column("gpus_json", String(4000)),   # [{family,type,count}]
+    Column("nodes", Integer),
+    Column("last_seen", Float),
+)
+
 users_t = Table(
     "users", metadata,
     Column("username", String(80), primary_key=True),

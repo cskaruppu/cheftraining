@@ -261,6 +261,8 @@ if [[ "${SKIP_BUILD:-0}" != "1" && "${DRY_RUN:-0}" != "1" ]]; then
   log "Building images with $ENGINE"
   "$ENGINE" build -t "$API_IMAGE" "$REPO_ROOT/backend"
   "$ENGINE" build -t "$UI_IMAGE" "$REPO_ROOT/frontend"
+  AGENT_IMAGE="$REGISTRY/$NS/modelect-agent:$TAG"
+  "$ENGINE" build -t "$AGENT_IMAGE" "$REPO_ROOT/agent"
 
   push_retry() {
     local ref="$1" attempt
@@ -275,6 +277,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" && "${DRY_RUN:-0}" != "1" ]]; then
   log "Pushing images"
   push_retry "$API_IMAGE"
   push_retry "$UI_IMAGE"
+  push_retry "$AGENT_IMAGE"
 fi
 
 # --------------------------------------------------------------------- deploy

@@ -67,14 +67,18 @@ push() {
   exit 1
 }
 
+AGENT_IMAGE="$REGISTRY/$NS/modelect-agent"
 build "$API_IMAGE" "$REPO_ROOT/backend"
 build "$UI_IMAGE" "$REPO_ROOT/frontend"
+build "$AGENT_IMAGE" "$REPO_ROOT/agent"
 
 echo "==> Pushing images"
 push "$API_IMAGE:$TAG"
 push "$API_IMAGE:latest"
 push "$UI_IMAGE:$TAG"
 push "$UI_IMAGE:latest"
+push "$AGENT_IMAGE:$TAG"
+push "$AGENT_IMAGE:latest"
 
 cat <<EOF
 
