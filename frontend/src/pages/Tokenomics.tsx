@@ -19,6 +19,28 @@ interface TeamView {
   state: string;
 }
 
+interface RouterPolicy {
+  requests: number;
+  small_requests: number;
+  small_share_pct: number;
+  actual_usd: number;
+  strong_usd: number;
+  saved_usd: number;
+}
+
+interface RouterSummary {
+  window_days: number;
+  vs_model: string;
+  provenance: string;
+  policies: Record<string, RouterPolicy>;
+}
+
+const POLICY_LABEL: Record<string, string> = {
+  route: "route — classified before sending",
+  cascade: "cascade — SLM-first, escalates",
+  auto: "auto — recommender routed",
+};
+
 interface Overview {
   kpis: {
     tokens_30d: number;
@@ -42,10 +64,13 @@ const STATE_CHIP: Record<string, { cls: string; label: (t: TeamView) => string }
 
 export default function Tokenomics() {
   const [data, setData] = useState<Overview | null>(null);
+  const [routing, setRouting] = useState<RouterSummary | null>(null);
   const [copied, setCopied] = useState("");
 
-  const refresh = () =>
+  const refresh = () => {
     fetch("/api/tokenomics").then((r) => r.json()).then(setData);
+    fetch("/api/router/summary").then((r) => r.json()).then(setRouting);
+  };
 
   useEffect(() => {
     refresh();
@@ -95,7 +120,7 @@ export default function Tokenomics() {
       </div>
 
       <div className="grid lg:grid-cols-[1.5fr_1fr] gap-4">
-        <div className="space-y-4">
+        <div className="space-y-4 min-w-0">
           <div className="card">
             <h2 className="text-sm font-medium mb-3">Team budgets &amp; enforcement</h2>
             <div className="overflow-x-auto">
@@ -178,7 +203,7 @@ export default function Tokenomics() {
           </div>
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-4 min-w-0">
           <div className="card">
             <h2 className="text-sm font-medium mb-3">Hybrid statement · 30d</h2>
             <table className="w-full text-sm">
@@ -215,6 +240,46 @@ export default function Tokenomics() {
             <p className="text-[11px] text-muted mt-2">
               One statement across API providers and private GPU-hosted models — the number
               observability-only tools can't produce.
+            </p>
+          </div>
+
+          <div className="card">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-medium">Routing savings · {routing?.window_days ?? 14}d</h2>
+              <span className="chip !text-[10px] border-good/50 text-good">measured, not promised</span>
+            </div>
+            {!routing || Object.keys(routing.policies).length === 0 ? (
+              <p className="text-sm text-muted">
+                No routed traffic yet — send gateway requests with{" "}
+                <code className="text-ink2">model: "route"</code>,{" "}
+                <code className="text-ink2">"cascade"</code> or <code className="text-ink2">"auto"</code>.
+              </p>
+            ) : (
+              <div className="space-y-2.5">
+                {Object.entries(routing.policies).map(([name, p]) => (
+                  <div key={name} className="border border-edge rounded-lg px-3 py-2.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-ink">{POLICY_LABEL[name] ?? name}</span>
+                      <span className="text-good font-medium tabular-nums">
+                        {fmtMoney(p.saved_usd)} saved
+                      </span>
+                    </div>
+                    <div className="mt-2 h-1.5 rounded-full bg-grid overflow-hidden">
+                      <div className="h-full rounded-full bg-s3"
+                        style={{ width: `${Math.min(100, p.small_share_pct)}%` }} />
+                    </div>
+                    <div className="mt-1.5 text-[10px] text-muted">
+                      {p.requests} requests · {p.small_share_pct.toFixed(0)}% served by a small
+                      model · {fmtMoney(p.actual_usd)} actual vs {fmtMoney(p.strong_usd)} if all
+                      went to {routing.vs_model}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-muted mt-3">
+              Computed from recorded traffic: each routed request's actual cost against what the
+              strongest model would have charged for the same token shape.
             </p>
           </div>
 

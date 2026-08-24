@@ -44,7 +44,11 @@ API highlights:
 - `POST /api/compare`, `GET /api/models/{id}/similar`
 - `GET /api/analytics/summary` — KPIs, daily spend, per-model usage
 - `POST /v1/chat/completions` — OpenAI-compatible; `"model": "auto"` routes
-  via the recommender; supports `"stream": true` (SSE)
+  via the recommender, `"cascade"` tries the SLM first and escalates,
+  `"route"` classifies the request BEFORE sending (one call, per-signal
+  receipt); supports `"stream": true` (SSE)
+- `POST /api/router/preview`, `GET /api/router/summary` — dry-run the
+  smart router; measured small-model share and savings per policy
 
 ## One-shot deploy (OpenShift or Kubernetes — recommended)
 

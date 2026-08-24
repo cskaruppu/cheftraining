@@ -29,6 +29,12 @@ DEFAULTS = [
      "description": "How long registry connector results are cached before "
                     "a re-sync.",
      "min_value": 1, "max_value": 48},
+    {"key": "router_threshold", "value": 0.5,
+     "label": "Smart-router complexity threshold",
+     "description": "Requests scoring at or above this complexity go to the "
+                    "strongest model; below it, the small model. Lower = more "
+                    "quality-cautious, higher = more cost-aggressive.",
+     "min_value": 0.1, "max_value": 0.9},
 ]
 
 

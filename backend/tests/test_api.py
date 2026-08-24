@@ -527,3 +527,55 @@ def test_evals_run():
     assert r2["results"][0]["avg_judge_score"] == r["results"][0]["avg_judge_score"]
     assert client.post("/api/evals", json={
         "prompts": [], "model_ids": ["gpt-5-mini", "phi-4"]}).status_code == 400
+
+
+def test_smart_router_simple_prompt_goes_small():
+    r = client.post("/v1/chat/completions", json={
+        "model": "route",
+        "messages": [{"role": "user", "content": "What is the capital of France?"}],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    router = body["modelect"]["receipt"]["router"]
+    assert router["policy"] == "smart-router"
+    assert router["verdict"] == "simple"
+    assert body["model"] == router["served_by"] == router["small"]
+    # decision is auditable: every signal listed, fired or not
+    ids = {s["signal"] for s in router["signals"]}
+    assert {"long_prompt", "reasoning_keywords", "short_question"} <= ids
+    fired = [s for s in router["signals"] if s["fired"]]
+    assert all(s["detail"] for s in fired)
+    assert router["score"] < router["threshold"]
+    # exactly one call, savings measured against the strong model
+    assert router["saved_usd"] >= 0
+    assert router["vs_model"] == router["strong"]
+
+
+def test_smart_router_complex_prompt_escalates_upfront():
+    prompt = ("Analyze the architecture trade-offs of this design and prove, "
+              "step by step, that the failover plan holds. " + "context " * 150)
+    r = client.post("/v1/chat/completions", json={
+        "model": "route",
+        "messages": [{"role": "user", "content": prompt}],
+    })
+    assert r.status_code == 200
+    router = r.json()["modelect"]["receipt"]["router"]
+    assert router["verdict"] == "complex"
+    assert router["served_by"] == router["strong"]
+    assert router["score"] >= router["threshold"]
+    assert "saved_usd" not in router  # no counterfactual claim on escalations
+
+
+def test_router_preview_and_measured_summary():
+    p = client.post("/api/router/preview", json={
+        "messages": [{"role": "user", "content": "Translate 'hello' to French?"}],
+    }).json()
+    assert p["verdict"] == "simple" and p["served_by"] == p["small"]
+
+    s = client.get("/api/router/summary").json()
+    assert s["provenance"] == "measured"
+    route_stats = s["policies"]["route"]  # the two gateway tests above recorded traffic
+    assert route_stats["requests"] >= 2
+    assert 0 <= route_stats["small_share_pct"] <= 100
+    assert route_stats["saved_usd"] >= 0
+    assert route_stats["strong_usd"] >= route_stats["actual_usd"]

@@ -32,7 +32,8 @@ def _cost(model_id: str, tokens_in: int, tokens_out: int) -> float:
 
 
 def _row(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
-         cached: bool, ts: datetime, team_id: str | None = None) -> dict:
+         cached: bool, ts: datetime, team_id: str | None = None,
+         policy: str | None = None) -> dict:
     return {
         "ts": ts.isoformat(),
         "day": ts.strftime("%Y-%m-%d"),
@@ -44,14 +45,15 @@ def _row(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
         "cached": cached,
         "cost": 0.0 if cached else round(_cost(model_id, tokens_in, tokens_out), 6),
         "team_id": team_id,
+        "policy": policy,
     }
 
 
 def record(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
            cached: bool = False, ts: datetime | None = None,
-           team_id: str | None = None):
+           team_id: str | None = None, policy: str | None = None):
     row = _row(model_id, tokens_in, tokens_out, latency_ms, cached,
-               ts or datetime.now(timezone.utc), team_id)
+               ts or datetime.now(timezone.utc), team_id, policy)
     with engine.begin() as conn:
         conn.execute(insert(events_t).values(**row))
 
@@ -121,6 +123,43 @@ def model_stats() -> dict:
         }
     _stats_cache.update(at=time.time(), data=data)
     return data
+
+
+def router_summary(days: int = 14) -> dict:
+    """Measured (not promised) routing economics: for every request
+    served under a routing policy, compare its actual cost against what
+    the strongest catalog model would have charged for the same token
+    shape. Savings are computed at read time from recorded traffic."""
+    from .catalog import MODELS
+    strong = max(MODELS, key=lambda m: m["quality"]["chat"])
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(events_t.c.model_id, events_t.c.tokens_in,
+                   events_t.c.tokens_out, events_t.c.cost, events_t.c.policy)
+            .where(events_t.c.policy.isnot(None), events_t.c.day >= since)
+        ).all()
+
+    policies: dict[str, dict] = {}
+    for r in rows:
+        p = policies.setdefault(r.policy, {
+            "requests": 0, "small_requests": 0,
+            "actual_usd": 0.0, "strong_usd": 0.0})
+        m = MODELS_BY_ID.get(r.model_id)
+        p["requests"] += 1
+        if m and m.get("size_class") == "slm":
+            p["small_requests"] += 1
+        p["actual_usd"] += r.cost or 0.0
+        p["strong_usd"] += (r.tokens_in * strong["input_price"]
+                            + r.tokens_out * strong["output_price"]) / 1_000_000
+    for p in policies.values():
+        p["small_share_pct"] = round(p["small_requests"] / p["requests"] * 100, 1) \
+            if p["requests"] else 0.0
+        p["saved_usd"] = round(max(0.0, p["strong_usd"] - p["actual_usd"]), 4)
+        p["actual_usd"] = round(p["actual_usd"], 4)
+        p["strong_usd"] = round(p["strong_usd"], 4)
+    return {"window_days": days, "vs_model": strong["id"],
+            "provenance": "measured", "policies": policies}
 
 
 def summary() -> dict:

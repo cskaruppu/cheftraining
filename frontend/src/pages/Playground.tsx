@@ -12,6 +12,23 @@ export default function Playground() {
   const [results, setResults] = useState<PlaygroundResult[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [preview, setPreview] = useState<{
+    verdict: string; score: number; threshold: number; served_by: string;
+    signals: { label: string; weight: number; fired: boolean; detail: string | null }[];
+  } | null>(null);
+
+  // live smart-router preview: where WOULD this prompt go, and why
+  useEffect(() => {
+    if (!prompt.trim()) { setPreview(null); return; }
+    const t = setTimeout(() => {
+      fetch("/api/router/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
+      }).then((r) => r.json()).then(setPreview).catch(() => setPreview(null));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [prompt]);
 
   useEffect(() => {
     api.models().then((d) => setModels(d.models));
@@ -75,6 +92,32 @@ export default function Playground() {
             Simulated in demo mode — wire provider keys to go live
           </span>
         </div>
+        {preview && (
+          <div className="mt-4 border border-edge rounded-lg bg-raised px-3.5 py-3 text-xs"
+            title="dry-run of the gateway's model:'route' policy — no tokens spent">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-muted uppercase tracking-[0.1em] text-[10px]">smart router</span>
+              <span className={`chip !text-[10px] ${preview.verdict === "complex"
+                ? "border-warn/50 text-warn" : "border-good/50 text-good"}`}>
+                {preview.verdict} · {preview.score.toFixed(2)} / {preview.threshold.toFixed(2)}
+              </span>
+              <span className="text-ink2">
+                <code>model: "route"</code> would send this to <span className="text-ink">{preview.served_by}</span>
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {preview.signals.filter((s) => s.fired).map((s) => (
+                <span key={s.label} className="chip !text-[10px]"
+                  title={s.detail ?? undefined}>
+                  {s.label} {s.weight > 0 ? "+" : ""}{s.weight}
+                </span>
+              ))}
+              {preview.signals.every((s) => !s.fired) && (
+                <span className="text-muted">no complexity signals fired — defaults to the small model</span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {err && <div className="card text-sm text-crit mb-4">{err}</div>}

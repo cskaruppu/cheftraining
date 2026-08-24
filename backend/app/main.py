@@ -24,6 +24,7 @@ import httpx
 
 from . import (agents, analytics, auth, clusters, config, deployments, evals,
                integration, migrate, registry, tokenomics, work)
+from . import router as smart_router
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
@@ -202,7 +203,8 @@ class PlaygroundRequest(BaseModel):
 
 def _simulate_completion(model: dict, prompt: str,
                          team_id: str | None = None,
-                         max_output_tokens: int | None = None) -> dict:
+                         max_output_tokens: int | None = None,
+                         policy: str | None = None) -> dict:
     """Demo mode: synthesizes a response instead of calling the provider.
 
     Production wiring point — replace with the provider adapter call
@@ -224,7 +226,8 @@ def _simulate_completion(model: dict, prompt: str,
         + f". Context window {model['context_window']:,} tokens."
     )
     cost = (tokens_in * model["input_price"] + tokens_out * model["output_price"]) / 1_000_000
-    analytics.record(model["id"], tokens_in, tokens_out, latency, team_id=team_id)
+    analytics.record(model["id"], tokens_in, tokens_out, latency,
+                     team_id=team_id, policy=policy)
     return {
         "model_id": model["id"], "model_name": model["name"], "provider": model["provider"],
         "text": text, "tokens_in": tokens_in, "tokens_out": tokens_out,
@@ -417,6 +420,14 @@ def analytics_summary():
     return analytics.summary()
 
 
+@app.get("/api/router/summary")
+def router_summary():
+    """Measured routing economics per policy (route/cascade/auto):
+    small-model share and savings vs. sending everything to the
+    strongest model — computed from recorded traffic, not projected."""
+    return analytics.router_summary()
+
+
 # --------------------------- tokenomics --------------------------------
 
 @app.get("/api/tokenomics")
@@ -494,6 +505,18 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
 
 
+class RouterPreviewRequest(BaseModel):
+    messages: list[ChatMessage]
+
+
+@app.post("/api/router/preview")
+def router_preview(req: RouterPreviewRequest):
+    """Dry-run the smart router: classify without serving, so the UI
+    can show where a prompt WOULD go and why."""
+    routed = smart_router.route([m.model_dump() for m in req.messages])
+    return routed["decision"]
+
+
 _CASCADE_KEYWORDS = ("analyze", "architecture", "design", "legal", "contract",
                      "prove", "math", "step by step", "plan", "strategy",
                      "debug", "reason")
@@ -519,12 +542,15 @@ def _cascade_route(prompt: str) -> tuple[dict, dict | None, str]:
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest,
                            authorization: str | None = Header(default=None)):
-    """Unified API: `model: "auto"` routes via the recommender and
-    `model: "cascade"` applies SLM-first routing with escalation.
+    """Unified API: `model: "auto"` routes via the recommender,
+    `model: "cascade"` applies SLM-first routing with escalation, and
+    `model: "route"` classifies the request BEFORE sending — exactly one
+    model call, with a per-signal receipt of the decision.
     A team API key in the Authorization header attributes the spend and
     activates that team's tokenomics guardrails."""
     prompt = req.messages[-1].content if req.messages else ""
     cascade_info = None
+    router_info = None
     if req.model == "auto":
         rec = recommend("chatbot", {"quality": 40, "cost": 40, "speed": 20})
         model = rec["results"][0]["model"]
@@ -534,6 +560,10 @@ async def chat_completions(req: ChatCompletionRequest,
                         "served_by": model["id"],
                         "escalated": model["id"] != tier1["id"],
                         "reason": cascade_reason}
+    elif req.model == "route":
+        routed = smart_router.route([m.model_dump() for m in req.messages])
+        model = routed["model"]
+        router_info = routed["decision"]
     elif req.model in MODELS_BY_ID:
         model = MODELS_BY_ID[req.model]
     else:
@@ -576,6 +606,8 @@ async def chat_completions(req: ChatCompletionRequest,
     # the request there; on failure fall back to simulation, honestly
     # labeled in the receipt.
     backend_info = {"type": "simulated"}
+    is_routed = req.model in ("auto", "cascade", "route")
+    policy = req.model if is_routed else None
     real_endpoint = work.ready_endpoint_for_model(model["id"])
     if real_endpoint and not req.stream:
         try:
@@ -591,16 +623,18 @@ async def chat_completions(req: ChatCompletionRequest,
                              usage.get("prompt_tokens", 0),
                              usage.get("completion_tokens", 0),
                              int(upstream.elapsed.total_seconds() * 1000),
-                             team_id=team["id"] if team else None)
+                             team_id=team["id"] if team else None,
+                             policy=policy)
             body["modelect"] = {
-                "routed": req.model in ("auto", "cascade"),
+                "routed": is_routed,
                 "receipt": {
                     **routing_receipt(model, usage.get("prompt_tokens", 0),
                                       usage.get("completion_tokens", 0),
-                                      routed=req.model in ("auto", "cascade")),
+                                      routed=is_routed),
                     "backend": {"type": "real", "endpoint": real_endpoint},
                     **({"enforcement": enforcement} if enforcement else {}),
                     **({"cascade": cascade_info} if cascade_info else {}),
+                    **({"router": router_info} if router_info else {}),
                 },
             }
             return body
@@ -612,15 +646,23 @@ async def chat_completions(req: ChatCompletionRequest,
     sim = _simulate_completion(
         model, prompt,
         team_id=team["id"] if team else None,
-        max_output_tokens=team.get("max_output_tokens") if team else None)
+        max_output_tokens=team.get("max_output_tokens") if team else None,
+        policy=policy)
 
-    # cascade savings: what the strong model would have cost for this shape
-    if cascade_info and not cascade_info["escalated"]:
-        strong = _cascade_strong_model()
+    # routing savings: what the strong model would have cost for this shape
+    def _saved_vs_strong(strong: dict) -> float:
         strong_cost = (sim["tokens_in"] * strong["input_price"]
                        + sim["tokens_out"] * strong["output_price"]) / 1_000_000
-        cascade_info["saved_usd"] = round(max(0.0, strong_cost - sim["cost"]), 6)
+        return round(max(0.0, strong_cost - sim["cost"]), 6)
+
+    if cascade_info and not cascade_info["escalated"]:
+        strong = _cascade_strong_model()
+        cascade_info["saved_usd"] = _saved_vs_strong(strong)
         cascade_info["vs_model"] = strong["id"]
+    if router_info and router_info["verdict"] == "simple":
+        strong = smart_router.strong_model()
+        router_info["saved_usd"] = _saved_vs_strong(strong)
+        router_info["vs_model"] = strong["id"]
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
@@ -633,14 +675,15 @@ async def chat_completions(req: ChatCompletionRequest,
                          "message": {"role": "assistant", "content": sim["text"]}}],
             "usage": {"prompt_tokens": sim["tokens_in"], "completion_tokens": sim["tokens_out"],
                       "total_tokens": sim["tokens_in"] + sim["tokens_out"]},
-            "modelect": {"routed": req.model == "auto", "latency_ms": sim["latency_ms"],
+            "modelect": {"routed": is_routed, "latency_ms": sim["latency_ms"],
                         "cost_usd": sim["cost"],
                         "receipt": {**routing_receipt(model, sim["tokens_in"],
                                                       sim["tokens_out"],
-                                                      routed=req.model in ("auto", "cascade")),
+                                                      routed=is_routed),
                                     "backend": backend_info,
                                     **({"enforcement": enforcement} if enforcement else {}),
-                                    **({"cascade": cascade_info} if cascade_info else {})}},
+                                    **({"cascade": cascade_info} if cascade_info else {}),
+                                    **({"router": router_info} if router_info else {})}},
         }
 
     async def sse():
