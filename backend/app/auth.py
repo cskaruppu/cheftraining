@@ -116,6 +116,7 @@ ADMIN_RULES = [
     ("GET", "/api/tokenomics"),
     ("DELETE", "/api/deployments/"),
     ("GET", "/api/agents/token"),
+    ("GET", "/api/dashboard/admin"),
 ]
 
 

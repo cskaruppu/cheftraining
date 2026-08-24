@@ -12,7 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import { AnalyticsSummary, api, fmtCompact, fmtMoney } from "../lib/api";
-import { PageHeader, Spinner, StatTile, tooltipStyle } from "../components/ui";
+import { PageHeader, Sparkline, Spinner, StatTile, tooltipStyle } from "../components/ui";
 
 const RANGES = [
   { days: 1, label: "24h" },
@@ -36,6 +36,25 @@ interface ClusterRow {
   gpu_class: string;
   agent_status: string;
 }
+
+interface AdminOps {
+  attention: { severity: "crit" | "warn" | "info"; kind: string; title: string; detail: string; link: string }[];
+  runway_days: number | null;
+  counterfactual: {
+    direct_requests: number; direct_cost: number; est_routed_cost: number;
+    est_savings: number; small_share_pct: number; basis: string;
+  } | null;
+  router_health: {
+    trend: { day: string; escalation_pct: number; requests: number }[];
+    escalation_pct: number; drift_pct: number | null;
+  };
+  prompt_bloat: { trend: { day: string; avg_tokens_in: number }[]; change_pct: number | null };
+  concentration: { provider: string; share_pct: number; providers_used: number; alternatives: number } | null;
+}
+
+const SEV_DOT: Record<string, string> = {
+  crit: "bg-crit", warn: "bg-warn", info: "bg-s1",
+};
 
 function EmptyChart({ label }: { label: string }) {
   return (
@@ -72,6 +91,7 @@ export default function Dashboard() {
   const [routing, setRouting] = useState<RouterSummary | null>(null);
   const [gov, setGov] = useState<TokenomicsOverview | null>(null);
   const [fleet, setFleet] = useState<ClusterRow[] | null>(null);
+  const [ops, setOps] = useState<AdminOps | null>(null);
   const [demoSeed, setDemoSeed] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [err, setErr] = useState("");
@@ -87,6 +107,7 @@ export default function Dashboard() {
       fetch(`/api/router/summary?days=${days}`).then((r) => r.json()).then(setRouting).catch(() => {});
       fetch("/api/tokenomics").then((r) => r.json()).then(setGov).catch(() => {});
       fetch("/api/clusters").then((r) => r.json()).then((c) => setFleet(c.clusters ?? [])).catch(() => {});
+      fetch(`/api/dashboard/admin?days=${days}`).then((r) => r.json()).then(setOps).catch(() => {});
     };
     refresh();
     fetch("/api/system").then((r) => r.json()).then((s) => setDemoSeed(s.demo_seed)).catch(() => {});
@@ -153,7 +174,9 @@ export default function Dashboard() {
           hint={`${fmtCompact(kpis.tokens_in + kpis.tokens_out)} tokens`} />
         <StatTile label={`Spend · ${rangeLabel}`} value={fmtMoney(kpis.spend)}
           delta={kpis.deltas.spend_pct} goodWhenDown spark={series.map((s) => s.cost)}
-          hint="across all providers" />
+          hint={ops?.runway_days != null
+            ? `runway ~${Math.round(ops.runway_days)}d at current burn`
+            : "across all providers"} />
         <StatTile label="Latency p50 / p95"
           value={<span className="tabular-nums">{kpis.p50_ms}<span className="text-muted text-base"> / </span>{kpis.p95_ms}<span className="text-sm text-muted"> ms</span></span>}
           delta={kpis.deltas.p95_pct} goodWhenDown hint="non-cached, measured" />
@@ -162,6 +185,24 @@ export default function Dashboard() {
         <StatTile label="Cache hit rate" value={`${kpis.cache_hit_rate}%`}
           hint="semantic cache savings" />
       </div>
+
+      {ops?.counterfactual && ops.counterfactual.est_savings > 0.01 && (
+        <Link to="/integrate"
+          className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-good/30 bg-good/5 px-4 py-2.5 hover:border-good/60 transition-colors">
+          <span className="text-good text-sm font-medium">
+            {fmtMoney(ops.counterfactual.est_savings)} left on the table
+          </span>
+          <span className="text-xs text-ink2">
+            your {fmtCompact(ops.counterfactual.direct_requests)} direct requests cost{" "}
+            {fmtMoney(ops.counterfactual.direct_cost)}; under <code>model: "route"</code> the same
+            token shapes would cost ~{fmtMoney(ops.counterfactual.est_routed_cost)}
+          </span>
+          <span className="chip !text-[10px] ml-auto shrink-0"
+            title={ops.counterfactual.basis}>
+            estimate · {ops.counterfactual.small_share_pct.toFixed(0)}% small mix, measured
+          </span>
+        </Link>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <SignatureCard title="Routing savings" to="/tokenomics" chip="measured">
@@ -205,6 +246,110 @@ export default function Dashboard() {
               : "loading fleet…"}
           </div>
         </SignatureCard>
+      </div>
+
+      <div className="grid lg:grid-cols-[1.5fr_1fr] gap-4 mb-6">
+        <div className="card min-w-0">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium">Needs attention</h2>
+            {ops && ops.attention.length > 0 && (
+              <span className="chip !text-[10px]">
+                {ops.attention.filter((i) => i.severity === "crit").length} critical ·{" "}
+                {ops.attention.length} total
+              </span>
+            )}
+          </div>
+          {!ops ? (
+            <div className="text-xs text-muted py-4">loading…</div>
+          ) : ops.attention.length === 0 ? (
+            <div className="py-6 text-center">
+              <div className="text-sm text-good">Nothing needs you — all green.</div>
+              <div className="text-[11px] text-muted mt-1">
+                Deployments healthy, agents reporting, budgets within policy, no anomalies.
+              </div>
+            </div>
+          ) : (
+            <div className="divide-y divide-edge/50">
+              {ops.attention.slice(0, 6).map((i, n) => (
+                <Link key={n} to={i.link} className="flex items-start gap-2.5 py-2 group">
+                  <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${SEV_DOT[i.severity]}`} />
+                  <span className="min-w-0">
+                    <span className="block text-sm text-ink group-hover:text-s1 transition-colors truncate">
+                      {i.title}
+                    </span>
+                    <span className="block text-[11px] text-muted truncate">{i.detail}</span>
+                  </span>
+                  <span className="chip !text-[9px] !py-0 ml-auto shrink-0 mt-1">{i.kind}</span>
+                </Link>
+              ))}
+              {ops.attention.length > 6 && (
+                <div className="pt-2 text-[11px] text-muted">
+                  +{ops.attention.length - 6} more — see the linked pages
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="card min-w-0">
+          <h2 className="text-sm font-medium mb-3">Router health &amp; efficiency</h2>
+          {!ops ? (
+            <div className="text-xs text-muted py-4">loading…</div>
+          ) : (
+            <div className="space-y-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {ops.router_health.escalation_pct}
+                    <span className="text-sm text-muted">% escalated</span>
+                  </div>
+                  <div className="text-[11px] text-muted">
+                    routed traffic sent to the strong model
+                    {ops.router_health.drift_pct != null && (
+                      <span className={ops.router_health.drift_pct > 10 ? " text-warn" : ""}>
+                        {" "}· drift {ops.router_health.drift_pct > 0 ? "+" : ""}
+                        {ops.router_health.drift_pct}pt
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <Sparkline values={ops.router_health.trend.map((t) => t.escalation_pct)} color="#d95926" />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-edge/50 pt-3">
+                <div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {fmtCompact(ops.prompt_bloat.trend[ops.prompt_bloat.trend.length - 1]?.avg_tokens_in ?? 0)}
+                    <span className="text-sm text-muted"> avg tokens in</span>
+                  </div>
+                  <div className="text-[11px] text-muted">
+                    prompt size per request
+                    {ops.prompt_bloat.change_pct != null && (
+                      <span className={ops.prompt_bloat.change_pct > 25 ? " text-warn" : ""}>
+                        {" "}· {ops.prompt_bloat.change_pct > 0 ? "+" : ""}
+                        {ops.prompt_bloat.change_pct}% over window
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <Sparkline values={ops.prompt_bloat.trend.map((t) => t.avg_tokens_in)} color="#199e70" />
+              </div>
+              {ops.concentration && (
+                <div className="border-t border-edge/50 pt-3">
+                  <div className="text-[11px] text-ink2">
+                    <span className={ops.concentration.share_pct > 60 ? "text-warn" : "text-ink"}>
+                      {ops.concentration.share_pct.toFixed(0)}%
+                    </span>{" "}
+                    of traffic on {ops.concentration.provider} · {ops.concentration.providers_used} providers in use
+                  </div>
+                  <div className="text-[11px] text-muted mt-0.5">
+                    {ops.concentration.alternatives} comparable-quality alternatives in the catalog
+                    {ops.concentration.share_pct > 60 ? " — failover path available" : ""}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4 mb-6">

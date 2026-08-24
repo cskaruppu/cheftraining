@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 import httpx
 
 from . import (agents, analytics, auth, clusters, config, deployments, evals,
-               integration, migrate, registry, tokenomics, work)
+               insights, integration, migrate, registry, tokenomics, work)
 from . import router as smart_router
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
@@ -418,6 +418,14 @@ def delete_deployment(dep_id: str):
 @app.get("/api/analytics/summary")
 def analytics_summary(days: int = 14):
     return analytics.summary(days)
+
+
+@app.get("/api/dashboard/admin")
+def dashboard_admin(days: int = 14):
+    """Admin operations layer: attention queue, budget runway,
+    counterfactual routing savings, router drift, prompt bloat and
+    provider concentration — aggregated from recorded platform state."""
+    return insights.admin_summary(days)
 
 
 @app.get("/api/router/summary")

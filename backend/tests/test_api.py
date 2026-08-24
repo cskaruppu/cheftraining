@@ -597,3 +597,43 @@ def test_router_preview_and_measured_summary():
     assert 0 <= route_stats["small_share_pct"] <= 100
     assert route_stats["saved_usd"] >= 0
     assert route_stats["strong_usd"] >= route_stats["actual_usd"]
+
+
+def test_admin_dashboard_insights():
+    r = client.get("/api/dashboard/admin")
+    assert r.status_code == 200
+    d = r.json()
+    # attention queue is ranked crit -> warn -> info
+    sev = [i["severity"] for i in d["attention"]]
+    order = {"crit": 0, "warn": 1, "info": 2}
+    assert sev == sorted(sev, key=lambda s: order[s])
+    # seeded estate: research-agents is degraded and anomalous -> crit items exist
+    assert any(i["kind"] == "budget" for i in d["attention"])
+    assert all({"severity", "kind", "title", "detail", "link"} <= set(i) for i in d["attention"])
+    # runway from real burn
+    assert d["runway_days"] is None or d["runway_days"] >= 0
+    # router health trend rows are day-bucketed percentages
+    for t in d["router_health"]["trend"]:
+        assert 0 <= t["escalation_pct"] <= 100
+    assert d["prompt_bloat"]["trend"]
+    conc = d["concentration"]
+    assert conc and 0 < conc["share_pct"] <= 100 and conc["providers_used"] >= 1
+    # admin-only
+    user = _user_client("doc-pipeline")
+    assert user.get("/api/dashboard/admin").status_code == 403
+
+
+def test_counterfactual_uses_measured_mix():
+    # generate a measured routed mix (>=5 routed requests)
+    for _ in range(5):
+        client.post("/v1/chat/completions", json={
+            "model": "route",
+            "messages": [{"role": "user", "content": "Translate hello to French?"}]})
+    d = client.get("/api/dashboard/admin").json()
+    cf = d["counterfactual"]
+    assert cf is not None
+    assert cf["direct_requests"] > 0
+    assert cf["est_routed_cost"] >= 0
+    assert "measured mix" in cf["basis"]
+    # savings claim is consistent with its own numbers
+    assert abs((cf["direct_cost"] - cf["est_routed_cost"]) - cf["est_savings"]) < 0.02
