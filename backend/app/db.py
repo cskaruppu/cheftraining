@@ -82,6 +82,8 @@ agents_t = Table(
     Column("last_seen", Float),
     Column("gpu_class", String(20)),     # gpu-ready | gpu-unmanaged | cpu-only
     Column("operator_detected", Boolean),
+    Column("driver_version", String(40)),
+    Column("cuda_version", String(20)),
 )
 
 work_t = Table(
@@ -121,6 +123,16 @@ ledger_t = Table(
     Column("team_id", String(40), nullable=True),
     Column("summary", String(400)),
     Column("receipt_json", Text),
+)
+
+# per-cluster allocation history: sampled by the fleet snapshot (throttled),
+# feeds the 24h sparkline on the GPU Fleet page; pruned after 48h
+cluster_util_t = Table(
+    "cluster_util_history", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("cluster_id", String(80), index=True),
+    Column("ts", Float, index=True),
+    Column("util_pct", Integer),
 )
 
 # small string settings (webhook URL, drill state) — config_t is numeric
@@ -186,6 +198,8 @@ _agent_cols = {c["name"] for c in _sa_inspect(engine).get_columns("agent_cluster
 _AGENT_MIGRATIONS = {
     "gpu_class": "ALTER TABLE agent_clusters ADD COLUMN gpu_class VARCHAR(20)",
     "operator_detected": "ALTER TABLE agent_clusters ADD COLUMN operator_detected BOOLEAN",
+    "driver_version": "ALTER TABLE agent_clusters ADD COLUMN driver_version VARCHAR(40)",
+    "cuda_version": "ALTER TABLE agent_clusters ADD COLUMN cuda_version VARCHAR(20)",
 }
 for _name, _ddl in _AGENT_MIGRATIONS.items():
     if _name not in _agent_cols:

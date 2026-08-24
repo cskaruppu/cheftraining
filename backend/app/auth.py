@@ -121,6 +121,7 @@ ADMIN_RULES = [
     ("POST", "/api/whatif"),
     ("GET", "/api/admin/"),
     ("PUT", "/api/admin/"),
+    ("PUT", "/api/clusters/"),
 ]
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { PageHeader, Spinner, StatTile } from "../components/ui";
+import { PageHeader, Sparkline, Spinner, StatTile } from "../components/ui";
 
 interface GpuPool {
   family: string;
@@ -9,6 +9,7 @@ interface GpuPool {
   free: number;
   virtual?: boolean;
   mode?: string;
+  vram_gb?: number;
 }
 
 interface Cluster {
@@ -26,8 +27,20 @@ interface Cluster {
   last_heartbeat_s: number;
   gpu_class?: "gpu-ready" | "gpu-unmanaged" | "cpu-only";
   operator_detected?: boolean;
+  driver_version?: string;
+  cuda_version?: string;
+  cordoned?: boolean;
+  util_history?: number[];
+  carbon_kg_day?: number;
+  fits?: { model_id: string; model_name: string; profile: string; quantization: string } | null;
   source: "agent" | "simulated";
 }
+
+const DEP_STATUS_CHIP: Record<string, string> = {
+  running: "border-good/40 text-good",
+  ready: "border-good/40 text-good",
+  error: "border-crit/50 text-crit",
+};
 
 function ClassBadge({ c }: { c: Cluster }) {
   if (c.gpu_class === "gpu-unmanaged")
@@ -218,6 +231,16 @@ export default function Clusters() {
   const [loaded, setLoaded] = useState(false);
   const [agentToken, setAgentToken] = useState("");
   const [showConnect, setShowConnect] = useState(false);
+  const [filter, setFilter] = useState<"all" | "gpu-ready" | "gpu-unmanaged" | "cpu-only" | "live">("all");
+
+  const toggleCordon = async (c: Cluster) => {
+    await fetch(`/api/clusters/${c.id}/cordon`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cordoned: !c.cordoned }),
+    });
+    refresh();
+  };
 
   const refresh = () =>
     Promise.all([
@@ -246,6 +269,14 @@ export default function Clusters() {
   const avgUtil = clusters.length
     ? Math.round(clusters.reduce((a, c) => a + c.utilization_pct, 0) / clusters.length)
     : 0;
+  const hottest = clusters.reduce<Cluster | null>(
+    (h, c) => (!h || c.utilization_pct > h.utilization_pct ? c : h), null);
+  const staleAgents = clusters.filter(
+    (c) => c.source === "agent" && c.agent_status !== "connected");
+  const shown = clusters.filter((c) =>
+    filter === "all" ? true :
+    filter === "live" ? c.source === "agent" :
+    (c.gpu_class ?? "gpu-ready") === filter);
 
   return (
     <div>
@@ -269,21 +300,63 @@ export default function Clusters() {
         <StatTile label="Clusters" value={clusters.length}
           hint={`${clusters.filter((c) => (c.gpu_class ?? "gpu-ready") === "gpu-ready").length} GPU-ready · ${clusters.filter((c) => c.gpu_class === "gpu-unmanaged").length} unmanaged · ${clusters.filter((c) => c.gpu_class === "cpu-only").length} CPU-only`} />
         <StatTile label="Total GPUs" value={totalGpus} hint={`${freeGpus} free for scheduling`} />
-        <StatTile label="Avg utilization" value={`${avgUtil}%`} hint="across the fleet" />
+        <StatTile label="Fleet allocation" value={`${avgUtil}%`}
+          hint={hottest
+            ? `hottest: ${hottest.name.split("—")[0].trim()} at ${hottest.utilization_pct}% · allocated ≠ busy`
+            : "allocated GPU slices, not measured load"} />
         <StatTile label="Models deployed" value={deployments.length} hint="fleet-wide" />
       </div>
 
+      {staleAgents.length > 0 && (
+        <div className="mb-4 border-l-2 border-warn rounded-r-lg bg-raised px-4 py-2.5 text-xs text-ink2">
+          <span className="text-warn font-medium">
+            {staleAgents.length} agent{staleAgents.length > 1 ? "s" : ""} stale:
+          </span>{" "}
+          {staleAgents.map((c) => c.name).join(", ")} — no recent heartbeat; their
+          deployments are unreachable and placement skips them until they reconnect.
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 mb-4">
+        <div className="flex rounded-lg border border-edge overflow-hidden">
+          {(["all", "gpu-ready", "gpu-unmanaged", "cpu-only", "live"] as const).map((f) => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={`px-2.5 py-1 text-[11px] transition-colors ${
+                f === filter ? "bg-raised text-ink" : "text-muted hover:text-ink2"}`}>
+              {f === "live" ? "live agents" : f}
+            </button>
+          ))}
+        </div>
+        {filter !== "all" && (
+          <span className="text-[11px] text-muted">{shown.length} of {clusters.length} clusters</span>
+        )}
+      </div>
+
       <div className="grid lg:grid-cols-3 gap-4">
-        {clusters.map((c) => {
+        {shown.map((c) => {
           const deps = deployments.filter((d) => d.cluster_id === c.id);
           return (
-            <div key={c.id} className="card flex flex-col gap-3">
+            <div key={c.id}
+              className={`card flex flex-col gap-3 ${c.cordoned ? "opacity-60 border-warn/40" : ""}`}>
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <div className="font-medium">{c.name}</div>
+                  <div className="font-medium">
+                    {c.name}
+                    {c.cordoned && (
+                      <span className="chip !ml-2 !py-0 !text-[10px] border-warn/50 text-warn"
+                        title="maintenance mode — placement skips this cluster">
+                        ⏸ maintenance
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-muted">
                     {c.platform === "openshift" ? "OpenShift" : "Kubernetes"} {c.version} ·{" "}
                     {c.region}
+                    {c.driver_version && (
+                      <span title="NVIDIA driver / CUDA, from GPU Operator node labels">
+                        {" "}· drv {c.driver_version}{c.cuda_version ? ` · CUDA ${c.cuda_version}` : ""}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1">
@@ -302,6 +375,9 @@ export default function Clusters() {
               <div className="flex flex-wrap gap-1.5">
                 <span className="chip">residency: {c.residency}</span>
                 <span className="chip">cost {c.cost_factor}x</span>
+                <span className="chip" title="0.4 kW per allocated GPU x regional grid factor — an estimate, refined by power telemetry in production">
+                  ~{c.carbon_kg_day ?? 0} kg CO₂e/day
+                </span>
                 {c.labels.map((l) => (
                   <span key={l} className="chip">{l}</span>
                 ))}
@@ -315,6 +391,9 @@ export default function Clusters() {
                       <div className="flex justify-between text-xs mb-1">
                         <span className="text-ink2">
                           {g.type}
+                          {g.vram_gb && !g.type.includes("GB") ? (
+                            <span className="text-muted"> · {g.vram_gb}GB</span>
+                          ) : null}
                           {g.virtual && (
                             <span className="chip !ml-1.5 !py-0 !px-1.5 !text-[10px] border-s3/50 text-s3"
                               title={`virtual GPUs (${g.mode}) — several models share one physical card`}>
@@ -340,16 +419,48 @@ export default function Clusters() {
                 })}
               </div>
 
+              {(c.util_history?.length ?? 0) >= 2 && (
+                <div className="flex items-center justify-between gap-2 text-[10px] text-muted"
+                  title="allocation history, sampled every 10 minutes">
+                  <span>allocation · 24h</span>
+                  <Sparkline values={c.util_history!} color="#3987e5" />
+                </div>
+              )}
+
+              <div className="text-[11px] border border-edge rounded-lg px-2.5 py-2"
+                title="admission preview from the placement engine — the largest self-hostable model this cluster can still schedule right now">
+                {c.cordoned ? (
+                  <span className="text-muted">in maintenance — not accepting deployments</span>
+                ) : c.fits ? (
+                  <>
+                    <span className="text-muted">fits up to: </span>
+                    <span className="text-ink">{c.fits.model_name}</span>
+                    <span className="text-muted"> · {c.fits.profile} ({c.fits.quantization})</span>
+                  </>
+                ) : (
+                  <span className="text-muted">no free GPU capacity for any serving profile</span>
+                )}
+              </div>
+
               <div className="border-t border-edge pt-3 mt-auto">
-                <div className="text-xs text-muted mb-1.5">
-                  Deployments ({deps.length})
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="text-xs text-muted">Deployments ({deps.length})</div>
+                  <button className="chip !text-[10px] hover:!text-ink transition"
+                    title={c.cordoned
+                      ? "return this cluster to the schedulable pool"
+                      : "maintenance mode: keep it visible but stop new placements"}
+                    onClick={() => toggleCordon(c)}>
+                    {c.cordoned ? "uncordon" : "cordon"}
+                  </button>
                 </div>
                 {deps.length === 0 ? (
                   <div className="text-xs text-muted">none scheduled here yet</div>
                 ) : (
                   <div className="flex flex-wrap gap-1.5">
                     {deps.map((d) => (
-                      <span key={d.id} className="chip border-s1/40 text-ink2">
+                      <span key={d.id}
+                        className={`chip ${DEP_STATUS_CHIP[d.status] ?? "border-warn/40 text-warn"}`}
+                        title={`status: ${d.status}`}>
                         {d.name}
                       </span>
                     ))}

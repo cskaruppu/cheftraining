@@ -58,8 +58,21 @@ def collect() -> dict:
     openshift = False
     gpu_hardware = False       # NVIDIA PCI device present (NFD label)
     operator_detected = False  # device plugin registered nvidia.com resources
+    driver_version = ""        # from GPU Operator node labels
+    cuda_version = ""
     for n in nodes:
         labels = n["metadata"].get("labels", {})
+        if not driver_version:
+            # nvidia.com/cuda.driver.major/.minor/.rev -> "550.90.07"
+            parts = [labels.get(f"nvidia.com/cuda.driver.{p}", "")
+                     for p in ("major", "minor", "rev")]
+            if parts[0]:
+                driver_version = ".".join(p for p in parts if p)
+        if not cuda_version:
+            rt = [labels.get(f"nvidia.com/cuda.runtime.{p}", "")
+                  for p in ("major", "minor")]
+            if rt[0]:
+                cuda_version = ".".join(p for p in rt if p)
         if any(k.startswith("node.openshift.io") or "openshift" in k for k in labels):
             openshift = True
         alloc = n.get("status", {}).get("allocatable", {})
@@ -72,8 +85,9 @@ def collect() -> dict:
             gpu_hardware = True
         product = labels.get("nvidia.com/gpu.product", "GPU")
         mem_mb = labels.get("nvidia.com/gpu.memory", "")
+        vram_gb = int(mem_mb) // 1024 if mem_mb.isdigit() else 0
         base_type = product.replace("-", " ") \
-            + (f" {int(mem_mb) // 1024}GB" if mem_mb.isdigit() else "")
+            + (f" {vram_gb}GB" if vram_gb else "")
 
         # Virtual GPUs, preferred over dedicating physical cards:
         # 1) MIG slices — allocatable resources like nvidia.com/mig-1g.10gb
@@ -84,7 +98,8 @@ def collect() -> dict:
                 pool = pools.setdefault(fam, {
                     "family": fam,
                     "type": f"{base_type} · MIG {profile} slice",
-                    "count": 0, "virtual": True, "mode": "mig"})
+                    "count": 0, "virtual": True, "mode": "mig",
+                    **({"vram_gb": vram_gb} if vram_gb else {})})
                 pool["count"] += int(qty)
 
         # 2) whole-GPU resource — time-sliced replicas count as virtual
@@ -97,7 +112,8 @@ def collect() -> dict:
                 "family": fam,
                 "type": base_type + (f" · time-sliced x{replicas}" if sliced else ""),
                 "count": 0, "virtual": sliced,
-                "mode": "time-slice" if sliced else "dedicated"})
+                "mode": "time-slice" if sliced else "dedicated",
+                **({"vram_gb": vram_gb} if vram_gb else {})})
             pool["count"] += count
     schedulable = sum(p["count"] for p in pools.values())
     if operator_detected and schedulable > 0:
@@ -119,6 +135,8 @@ def collect() -> dict:
         "gpu_class": gpu_class,
         "operator_detected": operator_detected,
         "gpu_hardware": gpu_hardware,
+        "driver_version": driver_version,
+        "cuda_version": cuda_version,
     }
 
 

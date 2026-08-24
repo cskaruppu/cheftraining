@@ -302,7 +302,28 @@ def post_eval(req: EvalRequest):
 
 @app.get("/api/clusters")
 def list_clusters():
-    return {"clusters": clusters.snapshot()}
+    snap = clusters.snapshot()
+    for c in snap:
+        c["fits"] = deployments.fits_preview(c)
+    return {"clusters": snap}
+
+
+class CordonRequest(BaseModel):
+    cordoned: bool
+
+
+@app.put("/api/clusters/{cluster_id}/cordon")
+def cordon_cluster(cluster_id: str, req: CordonRequest):
+    """Maintenance mode: a cordoned cluster stays visible but the
+    placement engine skips it (reason appears in placement receipts)."""
+    if cluster_id not in {c["id"] for c in clusters.snapshot()}:
+        raise HTTPException(404, f"unknown cluster '{cluster_id}'")
+    clusters.set_cordon(cluster_id, req.cordoned)
+    ledger.record("placement", "-",
+                  summary=f"cluster '{cluster_id}' "
+                          f"{'cordoned for maintenance' if req.cordoned else 'uncordoned'}",
+                  receipt={"cluster_id": cluster_id, "cordoned": req.cordoned})
+    return {"cluster_id": cluster_id, "cordoned": req.cordoned}
 
 
 class AgentReport(BaseModel):
@@ -318,6 +339,8 @@ class AgentReport(BaseModel):
     gpu_class: str = ""
     operator_detected: bool = False
     gpu_hardware: bool = False
+    driver_version: str = ""
+    cuda_version: str = ""
 
 
 @app.post("/api/agent/report")

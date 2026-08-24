@@ -55,6 +55,8 @@ def upsert_report(report: dict) -> dict:
                      or ("gpu-ready" if report.get("gpus") else "cpu-only"),
         "operator_detected": bool(report.get("operator_detected",
                                              bool(report.get("gpus")))),
+        "driver_version": (report.get("driver_version") or "")[:40],
+        "cuda_version": (report.get("cuda_version") or "")[:20],
     }
     with engine.begin() as conn:
         existing = conn.execute(
@@ -86,6 +88,8 @@ def real_clusters() -> list[dict]:
             "agent_status": "connected" if age < STALE_AFTER else "stale",
             "gpu_class": r["gpu_class"] or "cpu-only",
             "operator_detected": bool(r["operator_detected"]),
+            "driver_version": r["driver_version"] or "",
+            "cuda_version": r["cuda_version"] or "",
             "source": "agent",
         })
     return out

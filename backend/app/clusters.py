@@ -24,9 +24,10 @@ _SIM_CLUSTERS = [
         "region": "us-east", "residency": "us",
         "cost_factor": 1.0,
         "labels": ["env=prod", "tier=primary"],
+        "driver_version": "550.90.07", "cuda_version": "12.4",
         "gpus": [
-            {"family": "A100", "type": "NVIDIA A100 80GB", "count": 8, "used": 5},
-            {"family": "L40S", "type": "NVIDIA L40S 48GB", "count": 4, "used": 1},
+            {"family": "A100", "type": "NVIDIA A100 80GB", "count": 8, "used": 5, "vram_gb": 80},
+            {"family": "L40S", "type": "NVIDIA L40S 48GB", "count": 4, "used": 1, "vram_gb": 48},
         ],
     },
     {
@@ -36,9 +37,10 @@ _SIM_CLUSTERS = [
         "region": "eu-west", "residency": "eu",
         "cost_factor": 1.15,
         "labels": ["env=prod", "data-residency=eu"],
+        "driver_version": "550.54.15", "cuda_version": "12.4",
         "gpus": [
-            {"family": "H100", "type": "NVIDIA H100 80GB", "count": 2, "used": 2},
-            {"family": "L40S", "type": "NVIDIA L40S 48GB", "count": 4, "used": 3},
+            {"family": "H100", "type": "NVIDIA H100 80GB", "count": 2, "used": 2, "vram_gb": 80},
+            {"family": "L40S", "type": "NVIDIA L40S 48GB", "count": 4, "used": 3, "vram_gb": 48},
         ],
     },
     {
@@ -48,9 +50,10 @@ _SIM_CLUSTERS = [
         "region": "us-west", "residency": "us",
         "cost_factor": 0.6,
         "labels": ["env=burst", "pricing=spot"],
+        "driver_version": "560.28.03", "cuda_version": "12.6",
         "gpus": [
-            {"family": "H100", "type": "NVIDIA H100 80GB", "count": 4, "used": 0},
-            {"family": "L4", "type": "NVIDIA L4 24GB", "count": 8, "used": 1},
+            {"family": "H100", "type": "NVIDIA H100 80GB", "count": 4, "used": 0, "vram_gb": 80},
+            {"family": "L4", "type": "NVIDIA L4 24GB", "count": 8, "used": 1, "vram_gb": 24},
         ],
     },
 ]
@@ -73,6 +76,75 @@ def _sims_enabled() -> bool:
     return os.environ.get("SIM_CLUSTERS", "1") != "0"
 
 
+# ---- maintenance mode (cordon) --------------------------------------
+# vSphere-style: a cordoned cluster stays visible but the placement
+# engine skips it, with the reason in every receipt.
+
+def cordoned_ids() -> set[str]:
+    from .resilience import kv_get
+    raw = kv_get("cordoned_clusters") or ""
+    return {c for c in raw.split(",") if c}
+
+
+def set_cordon(cluster_id: str, cordoned: bool) -> set[str]:
+    from .resilience import kv_set
+    ids = cordoned_ids()
+    (ids.add if cordoned else ids.discard)(cluster_id)
+    kv_set("cordoned_clusters", ",".join(sorted(ids)) or None)
+    return ids
+
+
+# ---- allocation history (24h sparkline) -----------------------------
+# Sampled from the fleet snapshot, throttled to one point per cluster
+# per 10 minutes so dashboard polling doesn't flood the table.
+
+_HIST_EVERY_S = 600
+_last_hist: dict[str, float] = {}
+
+
+def _record_history(cluster_id: str, util_pct: int) -> None:
+    from sqlalchemy import delete, insert
+    from .db import cluster_util_t, engine
+    now = time.time()
+    if now - _last_hist.get(cluster_id, 0) < _HIST_EVERY_S:
+        return
+    _last_hist[cluster_id] = now
+    with engine.begin() as conn:
+        conn.execute(insert(cluster_util_t).values(
+            cluster_id=cluster_id, ts=now, util_pct=util_pct))
+        conn.execute(delete(cluster_util_t)
+                     .where(cluster_util_t.c.ts < now - 48 * 3600))
+
+
+def _history(cluster_id: str) -> list[int]:
+    from sqlalchemy import select
+    from .db import cluster_util_t, engine
+    since = time.time() - 24 * 3600
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(cluster_util_t.c.util_pct)
+            .where(cluster_util_t.c.cluster_id == cluster_id,
+                   cluster_util_t.c.ts >= since)
+            .order_by(cluster_util_t.c.ts)).all()
+    return [r.util_pct for r in rows]
+
+
+# 0.4 kW sustained draw per allocated GPU x 0.35 kgCO2e/kWh grid factor.
+# An estimate and labeled as one in the UI; refined by DCGM power
+# telemetry in production.
+def _carbon_kg_day(used_gpus: int) -> float:
+    return round(used_gpus * 0.4 * 24 * 0.35, 1)
+
+
+def _enrich(c: dict) -> dict:
+    used = sum(g["used"] for g in c["gpus"])
+    c["cordoned"] = c["id"] in cordoned_ids()
+    c["carbon_kg_day"] = _carbon_kg_day(used)
+    _record_history(c["id"], c["utilization_pct"])
+    c["util_history"] = _history(c["id"])
+    return c
+
+
 def snapshot() -> list[dict]:
     now = time.time()
     out = []
@@ -82,7 +154,8 @@ def snapshot() -> list[dict]:
             used = sum(g["used"] for g in c["gpus"])
             out.append({
                 **{k: c[k] for k in ("id", "name", "platform", "version",
-                                     "region", "residency", "cost_factor", "labels")},
+                                     "region", "residency", "cost_factor", "labels",
+                                     "driver_version", "cuda_version")},
                 "gpus": [{**g, "free": g["count"] - g["used"]} for g in c["gpus"]],
                 "utilization_pct": int(used / total * 100) if total else 0,
                 "agent_status": "connected",
@@ -99,7 +172,8 @@ def snapshot() -> list[dict]:
             gpus.append({"family": g.get("family", ""), "type": g.get("type", ""),
                          "count": count, "used": used, "free": max(0, count - used),
                          "virtual": bool(g.get("virtual", False)),
-                         "mode": g.get("mode", "dedicated")})
+                         "mode": g.get("mode", "dedicated"),
+                         **({"vram_gb": g["vram_gb"]} if g.get("vram_gb") else {})})
         total = sum(g["count"] for g in gpus)
         used_total = sum(g["used"] for g in gpus)
         out.append({
@@ -113,9 +187,11 @@ def snapshot() -> list[dict]:
             "last_heartbeat_s": c["agent_age_s"],
             "gpu_class": c["gpu_class"],
             "operator_detected": c["operator_detected"],
+            "driver_version": c.get("driver_version", ""),
+            "cuda_version": c.get("cuda_version", ""),
             "source": "agent",
         })
-    return out
+    return [_enrich(c) for c in out]
 
 
 def get_cluster_name(cluster_id: str) -> str | None:
@@ -133,6 +209,12 @@ def place(profile_gpus: str, residency: str | None = None) -> dict:
     for c in snapshot():
         entry = {"cluster_id": c["id"], "cluster_name": c["name"],
                  "source": c["source"], "reasons": []}
+        if c.get("cordoned"):
+            entry.update(eligible=False)
+            entry["reasons"].append(
+                "cordoned for maintenance — placement skips this cluster")
+            ranked.append(entry)
+            continue
         if residency and c["residency"] != residency:
             entry.update(eligible=False)
             entry["reasons"].append(f"excluded: residency '{c['residency']}' != required '{residency}'")

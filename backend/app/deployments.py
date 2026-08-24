@@ -72,8 +72,33 @@ def serving_profiles(model_id: str) -> list[dict]:
     return out
 
 
+_SIZE_ORDER = {"xl": 0, "large": 1, "medium": 2, "small": 3}
+
+
+def fits_preview(cluster: dict) -> dict | None:
+    """Admission preview for a fleet card: the LARGEST self-hostable
+    model this cluster could still schedule right now, and on which
+    profile. Answers 'can I deploy model X here?' before anyone tries."""
+    if cluster.get("cordoned") or cluster.get("gpu_class") not in (None, "gpu-ready"):
+        return None
+    free = {g["family"]: g["free"] for g in cluster.get("gpus", [])}
+    for model_id in sorted(_SIZE_CLASS, key=lambda m: _SIZE_ORDER[_SIZE_CLASS[m]]):
+        model = MODELS_BY_ID.get(model_id)
+        if not model:
+            continue
+        for p in serving_profiles(model_id):
+            needed, family = clusters.parse_profile_gpus(p["gpus"])
+            if free.get(family, 0) >= needed:
+                return {"model_id": model_id, "model_name": model["name"],
+                        "profile": p["gpus"], "quantization": p["quantization"]}
+    return None
+
+
 def create(model_id: str, profile_id: str, name: str,
            cluster_id: str | None = None, residency: str | None = None) -> dict:
+    if cluster_id and cluster_id in clusters.cordoned_ids():
+        raise ValueError(f"cluster '{cluster_id}' is cordoned for maintenance "
+                         "— uncordon it or let auto-placement choose")
     model = MODELS_BY_ID.get(model_id)
     if not model or not model["self_hostable"]:
         raise ValueError("model is not self-hostable")

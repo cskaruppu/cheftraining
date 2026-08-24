@@ -717,3 +717,51 @@ def test_alert_webhook_dedupe_and_resilience():
     assert crits and alerts.new_criticals(crits) == []
     client.put("/api/admin/webhook", json={"url": None})
     assert client.get("/api/admin/webhook").json()["url"] is None
+
+
+def test_fleet_enrichment_and_honesty():
+    snap = client.get("/api/clusters").json()["clusters"]
+    assert snap, "expected simulated fleet"
+    c = next(x for x in snap if x["id"] == "onprem-dc1")
+    # depth: VRAM per family, driver/CUDA versions, carbon estimate
+    assert all(g["vram_gb"] > 0 for g in c["gpus"])
+    assert c["driver_version"] and c["cuda_version"]
+    assert c["carbon_kg_day"] >= 0
+    assert isinstance(c["util_history"], list)  # fills as snapshots accrue
+    # admission preview: cloud-burst has 4 free H100 -> fits an XL profile
+    burst = next(x for x in snap if x["id"] == "cloud-burst")
+    assert burst["fits"] and "H100" in burst["fits"]["profile"]
+    # fuller cluster still fits something or honestly says None
+    for x in snap:
+        assert "fits" in x and "cordoned" in x
+
+
+def test_cordon_maintenance_mode():
+    # cordon -> visible but excluded from placement with a stated reason
+    assert client.put("/api/clusters/cloud-burst/cordon",
+                      json={"cordoned": True}).status_code == 200
+    snap = client.get("/api/clusters").json()["clusters"]
+    burst = next(x for x in snap if x["id"] == "cloud-burst")
+    assert burst["cordoned"] is True and burst["fits"] is None
+    placement = client.post("/api/placement", json={
+        "model_id": "llama-4-maverick", "profile_id": "balanced"}).json()
+    entry = next(e for e in placement["clusters"] if e["cluster_id"] == "cloud-burst")
+    assert entry["eligible"] is False
+    assert any("cordoned" in r for r in entry["reasons"])
+    # explicit deploy to a cordoned cluster is refused
+    r = client.post("/api/deployments", json={
+        "model_id": "llama-4-maverick", "profile_id": "balanced",
+        "name": "should-fail", "cluster_id": "cloud-burst"})
+    assert r.status_code == 400 and "cordoned" in r.json()["detail"]
+    # cordon actions are ledgered; uncordon restores schedulability
+    led = client.get("/api/ledger?kind=placement").json()
+    assert any("cordoned for maintenance" in e["summary"] for e in led["entries"])
+    client.put("/api/clusters/cloud-burst/cordon", json={"cordoned": False})
+    snap2 = client.get("/api/clusters").json()["clusters"]
+    assert next(x for x in snap2 if x["id"] == "cloud-burst")["cordoned"] is False
+    # admin-only + unknown cluster rejected
+    u = _user_client("doc-pipeline")
+    assert u.put("/api/clusters/onprem-dc1/cordon",
+                 json={"cordoned": True}).status_code == 403
+    assert client.put("/api/clusters/nope/cordon",
+                      json={"cordoned": True}).status_code == 404
