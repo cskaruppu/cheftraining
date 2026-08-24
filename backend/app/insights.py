@@ -228,8 +228,11 @@ def admin_summary(days: int = 14) -> dict:
         total_budget = sum(t["budget_usd"] for t in gov["teams"] if t["enabled"])
         total_spend = sum(t["spend"] for t in gov["teams"] if t["enabled"])
         runway = round(max(0.0, total_budget - total_spend) / burn, 1) if burn else None
+        attention = _attention(conn, gov)
+        from . import alerts
+        alerts.notify(attention)  # webhook on NEW critical items, deduped
         return {
-            "attention": _attention(conn, gov),
+            "attention": attention,
             "runway_days": runway,
             "counterfactual": _counterfactual(conn, days),
             "router_health": _router_trend(conn, days),

@@ -33,6 +33,34 @@ export default function Settings() {
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [outage, setOutage] = useState<{ provider: string | null; providers: string[] } | null>(null);
+  const [webhook, setWebhook] = useState("");
+  const [webhookSaved, setWebhookSaved] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/admin/outage").then((r) => r.json()).then(setOutage).catch(() => {});
+    fetch("/api/admin/webhook").then((r) => r.json())
+      .then((w) => setWebhook(w.url ?? "")).catch(() => {});
+  }, []);
+
+  const setDrill = async (provider: string | null) => {
+    const r = await fetch("/api/admin/outage", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    }).then((x) => x.json());
+    setOutage((o) => (o ? { ...o, provider: r.provider } : o));
+  };
+
+  const saveWebhook = async () => {
+    await fetch("/api/admin/webhook", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: webhook.trim() || null }),
+    });
+    setWebhookSaved(true);
+    setTimeout(() => setWebhookSaved(false), 1500);
+  };
 
   useEffect(() => {
     Promise.all([
@@ -141,6 +169,54 @@ export default function Settings() {
                 <span className="text-muted">Version</span>
                 <span className="text-ink2">{system.version}</span>
               </div>
+            </div>
+            <p className="text-[11px] text-muted mt-3 border-t border-edge/50 pt-2.5">
+              <span className="text-good">Privacy:</span> prompt and response contents
+              are never stored — the platform records only token counts, latency, cost
+              and routing decisions.
+            </p>
+          </div>
+
+          <div className="card">
+            <h2 className="text-sm font-medium mb-1.5">Resilience drill</h2>
+            <p className="text-[11px] text-muted mb-3">
+              Declare a provider down and the gateway fails its traffic over to the
+              closest comparable model — receipted and ledgered. Prove failover works
+              before an outage proves it for you.
+            </p>
+            {outage && (
+              <div className="flex flex-wrap items-center gap-2">
+                <select className="input !py-1.5 text-sm"
+                  value={outage.provider ?? ""}
+                  onChange={(e) => setDrill(e.target.value || null)}>
+                  <option value="">no drill — all providers up</option>
+                  {outage.providers.map((p) => (
+                    <option key={p} value={p}>{p} down</option>
+                  ))}
+                </select>
+                {outage.provider && (
+                  <span className="chip !text-[10px] border-crit/50 text-crit">
+                    drill active: {outage.provider} traffic failing over
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <h2 className="text-sm font-medium mb-1.5">Alert webhook</h2>
+            <p className="text-[11px] text-muted mb-3">
+              New critical attention items are pushed here as a Slack-compatible{" "}
+              <code className="text-ink2">{'{"text": …}'}</code> POST — deduped, so a
+              standing condition alerts once.
+            </p>
+            <div className="flex gap-2">
+              <input className="input !py-1.5 text-sm flex-1"
+                placeholder="https://hooks.slack.com/services/…"
+                value={webhook} onChange={(e) => setWebhook(e.target.value)} />
+              <button className="btn !text-xs" onClick={saveWebhook}>
+                {webhookSaved ? "✓ saved" : "Save"}
+              </button>
             </div>
           </div>
 

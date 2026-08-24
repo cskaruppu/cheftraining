@@ -23,7 +23,8 @@ from pydantic import BaseModel, Field
 import httpx
 
 from . import (agents, analytics, auth, clusters, config, deployments, evals,
-               insights, integration, migrate, registry, tokenomics, work)
+               insights, integration, ledger, migrate, registry, replay,
+               resilience, tokenomics, work)
 from . import router as smart_router
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
@@ -420,6 +421,69 @@ def analytics_summary(days: int = 14):
     return analytics.summary(days)
 
 
+@app.get("/api/ledger")
+def ledger_entries(days: int = 14, kind: str | None = None,
+                   policy: str | None = None, limit: int = 200):
+    """Model Decision Ledger — every routing, enforcement, failover and
+    placement decision with its receipt. Governance record, exportable."""
+    return ledger.entries(days=days, kind=kind, policy=policy, limit=limit)
+
+
+@app.get("/api/ledger/export")
+def ledger_export(days: int = 30):
+    csv_text = ledger.export_csv(days=days)
+    return Response(csv_text, media_type="text/csv", headers={
+        "Content-Disposition": f"attachment; filename=modelect-ledger-{days}d.csv"})
+
+
+class WhatIfRequest(BaseModel):
+    days: int = 14
+    scenario: dict
+
+
+@app.post("/api/whatif")
+def whatif(req: WhatIfRequest):
+    """Replay recorded traffic under a hypothetical model or routing
+    policy — exact re-pricing of YOUR token shapes, not a calculator."""
+    return replay.replay(req.days, req.scenario)
+
+
+class OutageRequest(BaseModel):
+    provider: str | None = None
+
+
+@app.get("/api/admin/outage")
+def get_outage():
+    return {"provider": resilience.outage_provider(),
+            "providers": sorted({m["provider"] for m in MODELS})}
+
+
+@app.put("/api/admin/outage")
+def set_outage(req: OutageRequest):
+    if req.provider is not None and \
+            req.provider not in {m["provider"] for m in MODELS}:
+        raise HTTPException(400, f"unknown provider '{req.provider}'")
+    resilience.kv_set(resilience.OUTAGE_KEY, req.provider)
+    return {"provider": req.provider}
+
+
+class WebhookRequest(BaseModel):
+    url: str | None = None
+
+
+@app.get("/api/admin/webhook")
+def get_webhook():
+    return {"url": resilience.kv_get(resilience.WEBHOOK_KEY)}
+
+
+@app.put("/api/admin/webhook")
+def set_webhook(req: WebhookRequest):
+    if req.url is not None and not req.url.startswith(("http://", "https://")):
+        raise HTTPException(400, "webhook URL must be http(s)")
+    resilience.kv_set(resilience.WEBHOOK_KEY, req.url)
+    return {"url": req.url}
+
+
 @app.get("/api/dashboard/admin")
 def dashboard_admin(days: int = 14):
     """Admin operations layer: attention queue, budget runway,
@@ -525,6 +589,38 @@ def router_preview(req: RouterPreviewRequest):
     return routed["decision"]
 
 
+def _ledger_gateway(model: dict, policy_name: str, team: dict | None,
+                    enforcement: dict | None, failover_info: dict | None,
+                    router_info: dict | None, cascade_info: dict | None,
+                    receipt: dict) -> None:
+    """One ledger entry per gateway decision — what was decided and why."""
+    if enforcement:
+        kind = "enforcement"
+        summary = (f"budget degrade: {enforcement['requested_model']} → "
+                   f"{enforcement['served_by']} (team {enforcement['team']} at "
+                   f"{enforcement['budget_pct']:.0f}% of budget)")
+    elif failover_info:
+        kind = "failover"
+        summary = (f"{failover_info['requested']} → {failover_info['served_by']}: "
+                   f"{failover_info['reason']}")
+    elif router_info:
+        kind = "routing"
+        summary = (f"smart-router {router_info['verdict']} "
+                   f"({router_info['score']}/{router_info['threshold']}) → {model['id']}")
+    elif cascade_info:
+        kind = "routing"
+        summary = f"cascade → {model['id']}: {cascade_info['reason']}"
+    elif policy_name == "auto":
+        kind = "routing"
+        summary = f"recommender routed → {model['id']}"
+    else:
+        kind = "routing"
+        summary = f"caller pinned {model['id']}"
+    ledger.record(kind, model["id"], policy=policy_name,
+                  team_id=team["id"] if team else None,
+                  summary=summary, receipt=receipt)
+
+
 _CASCADE_KEYWORDS = ("analyze", "architecture", "design", "legal", "contract",
                      "prove", "math", "step by step", "plan", "strategy",
                      "debug", "reason")
@@ -576,6 +672,13 @@ async def chat_completions(req: ChatCompletionRequest,
         model = MODELS_BY_ID[req.model]
     else:
         raise HTTPException(404, f"unknown model '{req.model}' — GET /api/models for the catalog")
+
+    # resilience drill: provider declared down -> automatic failover to
+    # the closest comparable model, receipted like every other decision
+    failover_info = None
+    fo = resilience.failover_for(model)
+    if fo:
+        model, failover_info = fo
 
     # ---- tokenomics guardrails (enforced at the gateway) --------------
     bearer = (authorization or "").removeprefix("Bearer ").strip() or None
@@ -643,8 +746,12 @@ async def chat_completions(req: ChatCompletionRequest,
                     **({"enforcement": enforcement} if enforcement else {}),
                     **({"cascade": cascade_info} if cascade_info else {}),
                     **({"router": router_info} if router_info else {}),
+                    **({"failover": failover_info} if failover_info else {}),
                 },
             }
+            _ledger_gateway(model, req.model if is_routed else "direct",
+                            team, enforcement, failover_info, router_info,
+                            cascade_info, body["modelect"]["receipt"])
             return body
         except Exception as e:
             backend_info = {"type": "simulated-fallback",
@@ -672,6 +779,17 @@ async def chat_completions(req: ChatCompletionRequest,
         router_info["saved_usd"] = _saved_vs_strong(strong)
         router_info["vs_model"] = strong["id"]
 
+    receipt_obj = {**routing_receipt(model, sim["tokens_in"], sim["tokens_out"],
+                                     routed=is_routed),
+                   "backend": backend_info,
+                   **({"enforcement": enforcement} if enforcement else {}),
+                   **({"cascade": cascade_info} if cascade_info else {}),
+                   **({"router": router_info} if router_info else {}),
+                   **({"failover": failover_info} if failover_info else {})}
+    _ledger_gateway(model, req.model if is_routed else "direct",
+                    team, enforcement, failover_info, router_info,
+                    cascade_info, receipt_obj)
+
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
 
@@ -685,13 +803,7 @@ async def chat_completions(req: ChatCompletionRequest,
                       "total_tokens": sim["tokens_in"] + sim["tokens_out"]},
             "modelect": {"routed": is_routed, "latency_ms": sim["latency_ms"],
                         "cost_usd": sim["cost"],
-                        "receipt": {**routing_receipt(model, sim["tokens_in"],
-                                                      sim["tokens_out"],
-                                                      routed=is_routed),
-                                    "backend": backend_info,
-                                    **({"enforcement": enforcement} if enforcement else {}),
-                                    **({"cascade": cascade_info} if cascade_info else {}),
-                                    **({"router": router_info} if router_info else {})}},
+                        "receipt": receipt_obj},
         }
 
     async def sse():

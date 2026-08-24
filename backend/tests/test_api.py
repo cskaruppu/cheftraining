@@ -637,3 +637,83 @@ def test_counterfactual_uses_measured_mix():
     assert "measured mix" in cf["basis"]
     # savings claim is consistent with its own numbers
     assert abs((cf["direct_cost"] - cf["est_routed_cost"]) - cf["est_savings"]) < 0.02
+
+
+def test_decision_ledger_records_and_exports():
+    # gateway traffic from earlier tests has been ledgered; add one known call
+    client.post("/v1/chat/completions", json={
+        "model": "route",
+        "messages": [{"role": "user", "content": "Define orchestration?"}]})
+    led = client.get("/api/ledger").json()
+    assert led["total"] > 0
+    kinds = {e["kind"] for e in led["entries"]}
+    assert "routing" in kinds
+    e = next(e for e in led["entries"] if e["policy"] == "route")
+    assert "smart-router" in e["summary"] and e["receipt"]["router"]["signals"]
+    # enforcement decisions are ledgered too (budget degrade ran earlier)
+    enf = client.get("/api/ledger?kind=enforcement").json()
+    assert all(x["kind"] == "enforcement" for x in enf["entries"])
+    # CSV export for auditors
+    r = client.get("/api/ledger/export?days=30")
+    assert r.headers["content-type"].startswith("text/csv")
+    assert r.text.splitlines()[0].startswith("ts,kind,policy")
+    # governance data is admin-only
+    u = _user_client("doc-pipeline")
+    assert u.get("/api/ledger").status_code == 403
+
+
+def test_whatif_replay():
+    # replay all traffic on one model: exact re-pricing of recorded shapes
+    r = client.post("/api/whatif", json={
+        "days": 14, "scenario": {"type": "model", "model_id": "gemini-2.5-flash"}}).json()
+    assert r["requests"] > 0 and r["actual"]["spend"] > 0
+    assert r["hypothetical"]["models"] == ["gemini-2.5-flash"]
+    assert abs((r["hypothetical"]["spend"] - r["actual"]["spend"])
+               - r["delta"]["spend_usd"]) < 0.02
+    assert r["basis"].startswith("exact re-pricing")
+    # route scenario uses the measured mix (routed traffic exists by now)
+    r2 = client.post("/api/whatif", json={"days": 14, "scenario": {"type": "route"}}).json()
+    assert "measured mix" in r2["basis"]
+    assert r2["hypothetical"]["spend"] >= 0
+    # unknown model is a clean error, not a crash
+    bad = client.post("/api/whatif", json={
+        "days": 14, "scenario": {"type": "model", "model_id": "nope"}}).json()
+    assert "unknown model" in bad["error"]
+
+
+def test_resilience_drill_failover():
+    # declare Anthropic down; a pinned Anthropic model fails over
+    assert client.put("/api/admin/outage", json={"provider": "Anthropic"}).status_code == 200
+    r = client.post("/v1/chat/completions", json={
+        "model": "claude-sonnet-4.5",
+        "messages": [{"role": "user", "content": "hi"}]}).json()
+    fo = r["modelect"]["receipt"]["failover"]
+    assert fo["requested"] == "claude-sonnet-4.5" and fo["provider_down"] == "Anthropic"
+    assert r["model"] == fo["served_by"] != "claude-sonnet-4.5"
+    from app.catalog import MODELS_BY_ID as MB
+    assert MB[r["model"]]["provider"] != "Anthropic"
+    # ledgered as a failover decision
+    led = client.get("/api/ledger?kind=failover").json()
+    assert any("resilience drill" in e["summary"] for e in led["entries"])
+    # drill off -> normal service resumes
+    client.put("/api/admin/outage", json={"provider": None})
+    r2 = client.post("/v1/chat/completions", json={
+        "model": "claude-sonnet-4.5",
+        "messages": [{"role": "user", "content": "hi"}]}).json()
+    assert r2["model"] == "claude-sonnet-4.5"
+    assert "failover" not in r2["modelect"]["receipt"]
+    # bad provider rejected
+    assert client.put("/api/admin/outage", json={"provider": "Nope"}).status_code == 400
+
+
+def test_alert_webhook_dedupe_and_resilience():
+    from app import alerts
+    # unreachable webhook must never break the dashboard
+    client.put("/api/admin/webhook", json={"url": "http://127.0.0.1:9/hook"})
+    assert client.get("/api/dashboard/admin").status_code == 200
+    # standing criticals were marked sent -> no re-alert on refresh
+    d = client.get("/api/dashboard/admin").json()
+    crits = [i for i in d["attention"] if i["severity"] == "crit"]
+    assert crits and alerts.new_criticals(crits) == []
+    client.put("/api/admin/webhook", json={"url": None})
+    assert client.get("/api/admin/webhook").json()["url"] is None

@@ -117,6 +117,10 @@ ADMIN_RULES = [
     ("DELETE", "/api/deployments/"),
     ("GET", "/api/agents/token"),
     ("GET", "/api/dashboard/admin"),
+    ("GET", "/api/ledger"),
+    ("POST", "/api/whatif"),
+    ("GET", "/api/admin/"),
+    ("PUT", "/api/admin/"),
 ]
 
 

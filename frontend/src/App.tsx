@@ -11,6 +11,8 @@ import Migrate from "./pages/Migrate";
 import Integrate from "./pages/Integrate";
 import Clusters from "./pages/Clusters";
 import Settings from "./pages/Settings";
+import Ledger from "./pages/Ledger";
+import WhatIf from "./pages/WhatIf";
 import Tokenomics from "./pages/Tokenomics";
 import Login from "./pages/Login";
 import MyUsage from "./pages/MyUsage";
@@ -106,6 +108,21 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M4 21c0-4 3.6-6 8-6s8 2 8 6" />
     </Icon>
   ),
+  whatif: (
+    <Icon>
+      <path d="M10 2v6.5L4.5 18a2 2 0 0 0 1.8 3h11.4a2 2 0 0 0 1.8-3L14 8.5V2" />
+      <path d="M8.5 2h7" />
+      <path d="M7 15h10" />
+    </Icon>
+  ),
+  ledger: (
+    <Icon>
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+      <path d="M9 7h7" />
+      <path d="M9 11h5" />
+    </Icon>
+  ),
   settings: (
     <Icon>
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
@@ -148,11 +165,17 @@ const ADMIN_GROUPS: NavGroup[] = [
       { to: "/clusters", label: "GPU Fleet", icon: "fleet" },
     ],
   },
-  DECIDE, DEPLOY, INTEGRATE,
+  {
+    ...DECIDE,
+    items: [...DECIDE.items,
+      { to: "/whatif", label: "What-If Replay", icon: "whatif" }],
+  },
+  DEPLOY, INTEGRATE,
   {
     label: "Govern",
     items: [
       { to: "/tokenomics", label: "Tokenomics", icon: "tokenomics" },
+      { to: "/ledger", label: "Decision Ledger", icon: "ledger" },
       { to: "/settings", label: "Settings", icon: "settings" },
     ],
   },
@@ -399,6 +422,8 @@ export default function App() {
           <Route path="/usage" element={<MyUsage />} />
           <Route path="/tokenomics" element={<AdminOnly><Tokenomics /></AdminOnly>} />
           <Route path="/settings" element={<AdminOnly><Settings /></AdminOnly>} />
+          <Route path="/ledger" element={<AdminOnly><Ledger /></AdminOnly>} />
+          <Route path="/whatif" element={<AdminOnly><WhatIf /></AdminOnly>} />
         </Routes>
         </div>
 

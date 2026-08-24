@@ -6,7 +6,7 @@ DSN for production/multi-replica deployments. Same schema either way.
 """
 import os
 
-from sqlalchemy import (Boolean, Column, Float, Integer, MetaData, String,
+from sqlalchemy import (Boolean, Column, Float, Integer, MetaData, String, Text,
                         Table, create_engine)
 
 DATA_DIR = os.environ.get(
@@ -105,6 +105,29 @@ users_t = Table(
     Column("salt", String(64)),
     Column("role", String(20)),          # "admin" | "user"
     Column("team_id", String(40), nullable=True),
+)
+
+# immutable record of every model decision the platform makes — the
+# routing/enforcement/failover/placement receipts, kept for governance
+# (record-keeping for AI-governance audits; append-only by convention)
+ledger_t = Table(
+    "decision_ledger", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", String(40), index=True),
+    Column("day", String(10), index=True),
+    Column("kind", String(20), index=True),   # routing|enforcement|failover|placement
+    Column("policy", String(20)),             # auto|cascade|route|direct
+    Column("model_id", String(80)),
+    Column("team_id", String(40), nullable=True),
+    Column("summary", String(400)),
+    Column("receipt_json", Text),
+)
+
+# small string settings (webhook URL, drill state) — config_t is numeric
+settings_kv_t = Table(
+    "settings_kv", metadata,
+    Column("key", String(60), primary_key=True),
+    Column("value", Text),
 )
 
 enforcement_t = Table(

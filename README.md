@@ -49,6 +49,18 @@ API highlights:
   receipt); supports `"stream": true` (SSE)
 - `POST /api/router/preview`, `GET /api/router/summary` — dry-run the
   smart router; measured small-model share and savings per policy
+- `GET /api/ledger` (+`/export` CSV) — **Model Decision Ledger**: every
+  routing, enforcement, failover and placement decision with its full
+  receipt; the record-keeping AI-governance audits ask for. Prompt
+  contents are never stored — only decisions about them.
+- `POST /api/whatif` — **What-If Replay**: re-price your recorded
+  traffic under a hypothetical model or routing policy; exact token
+  shapes, context-window warnings, honest latency basis
+- `PUT /api/admin/outage` — **resilience drill**: declare a provider
+  down and the gateway fails over to the closest comparable model,
+  receipted and ledgered
+- `PUT /api/admin/webhook` — Slack-compatible alert webhook for new
+  critical attention-queue items (deduped)
 
 ## One-shot deploy (OpenShift or Kubernetes — recommended)
 

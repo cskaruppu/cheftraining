@@ -108,6 +108,13 @@ def create(model_id: str, profile_id: str, name: str,
     with engine.begin() as conn:
         conn.execute(insert(deployments_t).values(**row))
 
+    from . import ledger
+    ledger.record("placement", model_id,
+                  summary=f"deployed '{row['name']}' ({profile['gpus']}) "
+                          f"on {cluster_name}",
+                  receipt={"cluster_id": cluster_id, "profile": profile,
+                           "residency": residency})
+
     # real (agent) cluster: queue the serving work order for its agent
     if cluster_id in {c["id"] for c in agents.real_clusters()}:
         gpu_count, _fam = clusters.parse_profile_gpus(profile["gpus"])
