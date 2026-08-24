@@ -48,15 +48,33 @@ export interface RecommendResponse {
 }
 
 export interface AnalyticsSummary {
+  window_days: number;
+  granularity: "hour" | "day";
   kpis: {
-    requests_24h: number;
+    requests: number;
     requests_total: number;
-    spend_total: number;
-    avg_latency_ms: number;
+    spend: number;
+    p50_ms: number;
+    p95_ms: number;
+    success_rate: number;
+    blocks: number;
     cache_hit_rate: number;
+    tokens_in: number;
+    tokens_out: number;
+    deltas: {
+      requests_pct: number | null;
+      spend_pct: number | null;
+      p95_pct: number | null;
+    };
   };
-  daily: { day: string; requests: number; cost: number }[];
-  by_model: { model: string; requests: number; cost: number; tokens: number }[];
+  series: { label: string; requests: number; cost: number; tokens: number }[];
+  by_model: { model_id: string; model: string; requests: number; cost: number; tokens: number }[];
+  model_count: number;
+  by_provider: { provider: string; requests: number; cost: number }[];
+  hybrid: {
+    api: { tokens: number; cost: number };
+    private: { tokens: number; cost: number };
+  };
   recent: {
     ts: string;
     model_name: string;
@@ -65,6 +83,9 @@ export interface AnalyticsSummary {
     latency_ms: number;
     cached: boolean;
     cost: number;
+    policy: string | null;
+    backend: string | null;
+    team_id: string | null;
   }[];
 }
 
@@ -125,7 +146,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ model_ids, prompt }),
     }),
-  analytics: () => req<AnalyticsSummary>("/api/analytics/summary"),
+  analytics: (days = 14) => req<AnalyticsSummary>(`/api/analytics/summary?days=${days}`),
 };
 
 export const SERIES = ["#3987e5", "#d95926", "#199e70"];

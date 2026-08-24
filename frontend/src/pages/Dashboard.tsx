@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Area,
   AreaChart,
@@ -13,32 +14,111 @@ import {
 import { AnalyticsSummary, api, fmtCompact, fmtMoney } from "../lib/api";
 import { PageHeader, Spinner, StatTile, tooltipStyle } from "../components/ui";
 
+const RANGES = [
+  { days: 1, label: "24h" },
+  { days: 7, label: "7d" },
+  { days: 14, label: "14d" },
+  { days: 30, label: "30d" },
+];
+
+interface RouterSummary {
+  vs_model: string;
+  policies: Record<string, { requests: number; small_requests: number; saved_usd: number }>;
+}
+
+interface TokenomicsOverview {
+  enforcement_log: { ts: string; action: string }[];
+  anomalies: unknown[];
+}
+
+interface ClusterRow {
+  source: string;
+  gpu_class: string;
+  agent_status: string;
+}
+
+function EmptyChart({ label }: { label: string }) {
+  return (
+    <div className="h-[220px] grid place-items-center text-center">
+      <div>
+        <div className="text-sm text-muted">{label}</div>
+        <div className="text-[11px] text-muted mt-1.5">
+          Send a request through the gateway or the Playground to start the clock.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SignatureCard({ title, to, chip, children }: {
+  title: string; to: string; chip?: string; children: React.ReactNode;
+}) {
+  return (
+    <Link to={to} className="card block hover:border-s1/40 transition-colors group">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="text-[10px] uppercase tracking-[0.12em] text-muted group-hover:text-ink2 transition-colors">
+          {title}
+        </div>
+        {chip && <span className="chip !py-0 !px-1.5 !text-[9px] border-good/50 text-good shrink-0">{chip}</span>}
+      </div>
+      {children}
+    </Link>
+  );
+}
+
 export default function Dashboard() {
+  const [days, setDays] = useState(14);
   const [data, setData] = useState<AnalyticsSummary | null>(null);
+  const [routing, setRouting] = useState<RouterSummary | null>(null);
+  const [gov, setGov] = useState<TokenomicsOverview | null>(null);
+  const [fleet, setFleet] = useState<ClusterRow[] | null>(null);
   const [demoSeed, setDemoSeed] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    const refresh = () =>
-      api.analytics()
+    const refresh = () => {
+      api.analytics(days)
         .then((d) => {
           setData(d);
           setUpdatedAt(new Date());
         })
         .catch((e) => setErr(String(e)));
+      fetch(`/api/router/summary?days=${days}`).then((r) => r.json()).then(setRouting).catch(() => {});
+      fetch("/api/tokenomics").then((r) => r.json()).then(setGov).catch(() => {});
+      fetch("/api/clusters").then((r) => r.json()).then((c) => setFleet(c.clusters ?? [])).catch(() => {});
+    };
     refresh();
     fetch("/api/system").then((r) => r.json()).then((s) => setDemoSeed(s.demo_seed)).catch(() => {});
     const t = setInterval(refresh, 10_000);
     return () => clearInterval(t);
-  }, []);
+  }, [days]);
 
   if (err) return <div className="text-crit text-sm">API error: {err}</div>;
   if (!data) return <Spinner />;
 
-  const { kpis } = data;
-  const daily = data.daily.map((d) => ({ ...d, label: d.day.slice(5) }));
+  const { kpis, series } = data;
+  const rangeLabel = RANGES.find((r) => r.days === days)?.label ?? `${days}d`;
   const byModel = data.by_model.slice(0, 6);
+  const empty = kpis.requests === 0;
+
+  // signature-row derivations
+  const routePolicies = Object.values(routing?.policies ?? {});
+  const routedReqs = routePolicies.reduce((a, p) => a + p.requests, 0);
+  const routedSmall = routePolicies.reduce((a, p) => a + p.small_requests, 0);
+  const routedSaved = routePolicies.reduce((a, p) => a + p.saved_usd, 0);
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
+  const enf24 = (gov?.enforcement_log ?? []).filter((l) => new Date(l.ts).getTime() >= dayAgo);
+  const enfByAction = enf24.reduce<Record<string, number>>((acc, l) => {
+    acc[l.action] = (acc[l.action] ?? 0) + 1;
+    return acc;
+  }, {});
+  const anomalies = gov?.anomalies?.length ?? 0;
+  const liveAgents = (fleet ?? []).filter((c) => c.source !== "simulated");
+  const gpuReady = (fleet ?? []).filter((c) => c.gpu_class === "gpu-ready").length;
+  const stale = liveAgents.filter((c) => c.agent_status !== "connected").length;
+  const hybridTotal = data.hybrid.api.tokens + data.hybrid.private.tokens;
+  const privatePct = hybridTotal ? Math.round((data.hybrid.private.tokens / hybridTotal) * 100) : 0;
 
   return (
     <div>
@@ -49,50 +129,171 @@ export default function Dashboard() {
             ? "Live traffic, spend and latency observed through the gateway — real events plus seeded demo history"
             : "Live traffic, spend and latency observed through the gateway — real traffic only"}
         />
-        <span className="chip !text-[11px] mt-1 shrink-0" title="the page re-queries the event store every 10 seconds">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-good mr-1.5 animate-pulse" />
-          live · {updatedAt ? updatedAt.toLocaleTimeString() : "…"}
-        </span>
+        <div className="flex items-center gap-2 mt-1 shrink-0">
+          <div className="flex rounded-lg border border-edge overflow-hidden"
+            title="time range — every number and chart on this page follows it">
+            {RANGES.map((r) => (
+              <button key={r.days} onClick={() => { setDays(r.days); setData(null); }}
+                className={`px-2.5 py-1 text-[11px] transition-colors ${
+                  r.days === days ? "bg-raised text-ink" : "text-muted hover:text-ink2"}`}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+          <span className="chip !text-[11px]" title="the page re-queries the event store every 10 seconds">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-good mr-1.5 animate-pulse" />
+            live · {updatedAt ? updatedAt.toLocaleTimeString() : "…"}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
+        <StatTile label={`Requests · ${rangeLabel}`} value={fmtCompact(kpis.requests)}
+          delta={kpis.deltas.requests_pct} spark={series.map((s) => s.requests)}
+          hint={`${fmtCompact(kpis.tokens_in + kpis.tokens_out)} tokens`} />
+        <StatTile label={`Spend · ${rangeLabel}`} value={fmtMoney(kpis.spend)}
+          delta={kpis.deltas.spend_pct} goodWhenDown spark={series.map((s) => s.cost)}
+          hint="across all providers" />
+        <StatTile label="Latency p50 / p95"
+          value={<span className="tabular-nums">{kpis.p50_ms}<span className="text-muted text-base"> / </span>{kpis.p95_ms}<span className="text-sm text-muted"> ms</span></span>}
+          delta={kpis.deltas.p95_pct} goodWhenDown hint="non-cached, measured" />
+        <StatTile label="Success rate" value={`${kpis.success_rate}%`}
+          hint={kpis.blocks ? `${kpis.blocks} blocked by guardrails` : "no guardrail blocks"} />
+        <StatTile label="Cache hit rate" value={`${kpis.cache_hit_rate}%`}
+          hint="semantic cache savings" />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatTile label="Requests · 24h" value={fmtCompact(kpis.requests_24h)} hint={`${fmtCompact(kpis.requests_total)} total (14d)`} />
-        <StatTile label="Spend · 14d" value={fmtMoney(kpis.spend_total)} hint="across all providers" />
-        <StatTile label="Avg latency" value={`${kpis.avg_latency_ms} ms`} hint="first-token, non-cached" />
-        <StatTile label="Cache hit rate" value={`${kpis.cache_hit_rate}%`} hint="semantic cache savings" />
+        <SignatureCard title="Routing savings" to="/tokenomics" chip="measured">
+          <div className="text-lg font-semibold text-good">{fmtMoney(routedSaved)}</div>
+          <div className="text-[11px] text-muted mt-0.5">
+            {routedReqs
+              ? `${routedReqs ? Math.round((routedSmall / routedReqs) * 100) : 0}% of ${fmtCompact(routedReqs)} routed requests served small`
+              : "no routed traffic yet — try model: \"route\""}
+          </div>
+        </SignatureCard>
+        <SignatureCard title="Hybrid estate" to="/tokenomics">
+          <div className="text-lg font-semibold tabular-nums">
+            {privatePct}<span className="text-sm text-muted">% private GPU</span>
+          </div>
+          <div className="mt-1.5 h-1.5 rounded-full bg-grid overflow-hidden flex">
+            <div className="h-full bg-s1" style={{ width: `${100 - privatePct}%` }} />
+            <div className="h-full bg-s3" style={{ width: `${privatePct}%` }} />
+          </div>
+          <div className="text-[11px] text-muted mt-1">
+            API {fmtCompact(data.hybrid.api.tokens)} · private {fmtCompact(data.hybrid.private.tokens)} tokens
+          </div>
+        </SignatureCard>
+        <SignatureCard title="Enforcement · 24h" to="/tokenomics">
+          <div className="text-lg font-semibold tabular-nums">{enf24.length + anomalies}</div>
+          <div className="text-[11px] text-muted mt-0.5">
+            {enf24.length + anomalies === 0
+              ? "no guardrail actions — all teams within policy"
+              : [
+                  ...Object.entries(enfByAction).map(([a, n]) => `${n} ${a.toLowerCase()}`),
+                  anomalies ? `${anomalies} anomal${anomalies === 1 ? "y" : "ies"}` : "",
+                ].filter(Boolean).join(" · ")}
+          </div>
+        </SignatureCard>
+        <SignatureCard title="GPU fleet" to="/clusters">
+          <div className="text-lg font-semibold tabular-nums">
+            {fleet?.length ?? "…"}<span className="text-sm text-muted"> clusters</span>
+          </div>
+          <div className="text-[11px] text-muted mt-0.5">
+            {fleet
+              ? `${gpuReady} gpu-ready · ${liveAgents.length} live agent${liveAgents.length === 1 ? "" : "s"}${stale ? ` · ${stale} stale` : ""}`
+              : "loading fleet…"}
+          </div>
+        </SignatureCard>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4 mb-6">
         <div className="card">
-          <h2 className="text-sm font-medium mb-4">Daily spend (USD)</h2>
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={daily} margin={{ top: 4, right: 8, left: -14, bottom: 0 }}>
-              <defs>
-                <linearGradient id="spend" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#3987e5" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="#3987e5" stopOpacity={0.02} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="#2c2c2a" vertical={false} />
-              <XAxis dataKey="label" stroke="#898781" fontSize={11} tickLine={false} axisLine={{ stroke: "#383835" }} />
-              <YAxis stroke="#898781" fontSize={11} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={tooltipStyle} cursor={{ stroke: "#898781", strokeDasharray: "3 3" }} />
-              <Area type="monotone" dataKey="cost" name="Spend" stroke="#3987e5" strokeWidth={2} fill="url(#spend)" />
-            </AreaChart>
-          </ResponsiveContainer>
+          <h2 className="text-sm font-medium mb-4">
+            Spend (USD){data.granularity === "hour" ? " · hourly" : " · daily"}
+          </h2>
+          {empty ? <EmptyChart label={`No traffic in the last ${rangeLabel}`} /> : (
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={series} margin={{ top: 4, right: 8, left: -14, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="spend" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3987e5" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#3987e5" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="#2c2c2a" vertical={false} />
+                <XAxis dataKey="label" stroke="#898781" fontSize={11} tickLine={false} axisLine={{ stroke: "#383835" }} />
+                <YAxis stroke="#898781" fontSize={11} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={tooltipStyle} cursor={{ stroke: "#898781", strokeDasharray: "3 3" }} />
+                <Area type="monotone" dataKey="cost" name="Spend" stroke="#3987e5" strokeWidth={2} fill="url(#spend)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         <div className="card">
-          <h2 className="text-sm font-medium mb-4">Requests by model · 14d</h2>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={byModel} layout="vertical" margin={{ top: 0, right: 24, left: 40, bottom: 0 }}>
-              <CartesianGrid stroke="#2c2c2a" horizontal={false} />
-              <XAxis type="number" stroke="#898781" fontSize={11} tickLine={false} axisLine={{ stroke: "#383835" }} />
-              <YAxis type="category" dataKey="model" stroke="#c3c2b7" fontSize={11} width={120} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-              <Bar dataKey="requests" name="Requests" fill="#3987e5" radius={[0, 4, 4, 0]} barSize={14} />
-            </BarChart>
-          </ResponsiveContainer>
+          <h2 className="text-sm font-medium mb-4">
+            Token throughput{data.granularity === "hour" ? " · hourly" : " · daily"}
+          </h2>
+          {empty ? <EmptyChart label={`No tokens metered in the last ${rangeLabel}`} /> : (
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={series} margin={{ top: 4, right: 8, left: -14, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="tokens" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#199e70" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#199e70" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="#2c2c2a" vertical={false} />
+                <XAxis dataKey="label" stroke="#898781" fontSize={11} tickLine={false} axisLine={{ stroke: "#383835" }} />
+                <YAxis stroke="#898781" fontSize={11} tickLine={false} axisLine={false}
+                  tickFormatter={(v: number) => fmtCompact(v)} />
+                <Tooltip contentStyle={tooltipStyle} cursor={{ stroke: "#898781", strokeDasharray: "3 3" }}
+                  formatter={(v: number) => fmtCompact(v)} />
+                <Area type="monotone" dataKey="tokens" name="Tokens" stroke="#199e70" strokeWidth={2} fill="url(#tokens)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4 mb-6">
+        <div className="card">
+          <h2 className="text-sm font-medium mb-4">
+            Requests by model · {rangeLabel}
+            {data.model_count > 6 && (
+              <span className="text-xs text-muted font-normal"> — top 6 of {data.model_count}</span>
+            )}
+          </h2>
+          {empty ? <EmptyChart label="No model traffic yet" /> : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={byModel} layout="vertical" margin={{ top: 0, right: 24, left: 40, bottom: 0 }}>
+                <CartesianGrid stroke="#2c2c2a" horizontal={false} />
+                <XAxis type="number" stroke="#898781" fontSize={11} tickLine={false} axisLine={{ stroke: "#383835" }} />
+                <YAxis type="category" dataKey="model" stroke="#c3c2b7" fontSize={11} width={120} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                <Bar dataKey="requests" name="Requests" fill="#3987e5" radius={[0, 4, 4, 0]} barSize={14} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        <div className="card">
+          <h2 className="text-sm font-medium mb-4">Spend by provider · {rangeLabel}</h2>
+          {empty ? <EmptyChart label="No spend recorded yet" /> : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={data.by_provider.slice(0, 6)} layout="vertical"
+                margin={{ top: 0, right: 24, left: 40, bottom: 0 }}>
+                <CartesianGrid stroke="#2c2c2a" horizontal={false} />
+                <XAxis type="number" stroke="#898781" fontSize={11} tickLine={false}
+                  axisLine={{ stroke: "#383835" }} tickFormatter={(v: number) => `$${v}`} />
+                <YAxis type="category" dataKey="provider" stroke="#c3c2b7" fontSize={11} width={120} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(255,255,255,0.04)" }}
+                  formatter={(v: number) => fmtMoney(v)} />
+                <Bar dataKey="cost" name="Spend" fill="#d95926" radius={[0, 4, 4, 0]} barSize={14} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
 
@@ -104,24 +305,50 @@ export default function Dashboard() {
               <tr className="text-left text-xs text-muted border-b border-edge">
                 <th className="py-2 pr-4 font-normal">Time (UTC)</th>
                 <th className="py-2 pr-4 font-normal">Model</th>
+                <th className="py-2 pr-4 font-normal">Routing</th>
                 <th className="py-2 pr-4 font-normal text-right">Tokens in/out</th>
                 <th className="py-2 pr-4 font-normal text-right">Latency</th>
                 <th className="py-2 pr-4 font-normal text-right">Cost</th>
-                <th className="py-2 font-normal">Cache</th>
+                <th className="py-2 font-normal">Backend</th>
               </tr>
             </thead>
             <tbody>
+              {data.recent.length === 0 && (
+                <tr><td colSpan={7} className="py-6 text-center text-muted text-xs">
+                  No requests yet — the gateway records every call here with its routing provenance.
+                </td></tr>
+              )}
               {data.recent.map((r, i) => (
                 <tr key={i} className="border-b border-edge/50 text-ink2">
                   <td className="py-2 pr-4 tabular-nums">{r.ts.slice(5, 16).replace("T", " ")}</td>
                   <td className="py-2 pr-4 text-ink">{r.model_name}</td>
+                  <td className="py-2 pr-4">
+                    {r.policy ? (
+                      <span className="chip !py-0 !text-[10px] border-s1/40 text-s1"
+                        title={r.policy === "route" ? "classified before sending — smart router"
+                          : r.policy === "cascade" ? "SLM-first with escalation"
+                          : "recommender-routed"}>
+                        {r.policy}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-muted">direct</span>
+                    )}
+                  </td>
                   <td className="py-2 pr-4 text-right tabular-nums">
                     {fmtCompact(r.tokens_in)} / {fmtCompact(r.tokens_out)}
                   </td>
                   <td className="py-2 pr-4 text-right tabular-nums">{r.cached ? "—" : `${r.latency_ms} ms`}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{r.cached ? "$0" : fmtMoney(r.cost)}</td>
                   <td className="py-2">
-                    {r.cached ? <span className="chip border-s3/40 text-s3">hit</span> : <span className="chip">miss</span>}
+                    {r.cached ? (
+                      <span className="chip border-s3/40 text-s3">cache hit</span>
+                    ) : r.backend === "real" ? (
+                      <span className="chip !text-[10px] border-good/50 text-good"
+                        title="served by a live vLLM endpoint on your GPU fleet">real vLLM</span>
+                    ) : (
+                      <span className="chip !text-[10px]"
+                        title="synthesized response — provider call not wired in this build">simulated</span>
+                    )}
                   </td>
                 </tr>
               ))}

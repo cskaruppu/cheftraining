@@ -10,20 +10,57 @@ export function PageHeader({ title, sub }: { title: string; sub: string }) {
   );
 }
 
+export function Sparkline({ values, color = "#3987e5" }: { values: number[]; color?: string }) {
+  if (values.length < 2) return null;
+  const w = 96, h = 26, pad = 2;
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = max - min || 1;
+  const pts = values
+    .map((v, i) => `${pad + (i / (values.length - 1)) * (w - pad * 2)},${h - pad - ((v - min) / span) * (h - pad * 2)}`)
+    .join(" ");
+  return (
+    <svg width={w} height={h} className="block" aria-hidden>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5"
+        strokeLinejoin="round" strokeLinecap="round" opacity="0.8" />
+    </svg>
+  );
+}
+
 export function StatTile({
   label,
   value,
   hint,
+  delta,
+  goodWhenDown,
+  spark,
 }: {
   label: string;
   value: ReactNode;
   hint?: string;
+  /** period-over-period % change; null/undefined hides the badge */
+  delta?: number | null;
+  /** for latency-like metrics a falling delta is the good direction */
+  goodWhenDown?: boolean;
+  spark?: number[];
 }) {
+  const up = (delta ?? 0) > 0;
+  const good = delta === 0 ? true : goodWhenDown ? !up : up;
   return (
     <div className="card">
-      <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+        {delta !== null && delta !== undefined && (
+          <span className={`text-[10px] tabular-nums ${good ? "text-good" : "text-warn"}`}
+            title="vs the previous period of the same length">
+            {up ? "▲" : delta < 0 ? "▼" : "—"} {Math.abs(delta).toFixed(1)}%
+          </span>
+        )}
+      </div>
       <div className="text-2xl font-semibold mt-2">{value}</div>
-      {hint && <div className="text-xs text-ink2 mt-1">{hint}</div>}
+      <div className="flex items-end justify-between gap-2 mt-1">
+        {hint ? <div className="text-xs text-ink2">{hint}</div> : <span />}
+        {spark && <Sparkline values={spark} />}
+      </div>
     </div>
   );
 }

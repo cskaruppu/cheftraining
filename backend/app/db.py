@@ -51,6 +51,7 @@ events_t = Table(
     Column("cost", Float),
     Column("team_id", String(40), nullable=True, index=True),
     Column("policy", String(20), nullable=True),
+    Column("backend", String(20), nullable=True),
 )
 
 teams_t = Table(
@@ -140,6 +141,10 @@ if "policy" not in _cols:
     with engine.begin() as _conn:
         _conn.execute(_sa_text(
             "ALTER TABLE analytics_events ADD COLUMN policy VARCHAR(20)"))
+if "backend" not in _cols:
+    with engine.begin() as _conn:
+        _conn.execute(_sa_text(
+            "ALTER TABLE analytics_events ADD COLUMN backend VARCHAR(20)"))
 
 _team_cols = {c["name"] for c in _sa_inspect(engine).get_columns("teams")}
 _TEAM_MIGRATIONS = {

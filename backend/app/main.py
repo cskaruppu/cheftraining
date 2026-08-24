@@ -227,7 +227,7 @@ def _simulate_completion(model: dict, prompt: str,
     )
     cost = (tokens_in * model["input_price"] + tokens_out * model["output_price"]) / 1_000_000
     analytics.record(model["id"], tokens_in, tokens_out, latency,
-                     team_id=team_id, policy=policy)
+                     team_id=team_id, policy=policy, backend="simulated")
     return {
         "model_id": model["id"], "model_name": model["name"], "provider": model["provider"],
         "text": text, "tokens_in": tokens_in, "tokens_out": tokens_out,
@@ -416,16 +416,16 @@ def delete_deployment(dep_id: str):
 # --------------------------- analytics --------------------------------
 
 @app.get("/api/analytics/summary")
-def analytics_summary():
-    return analytics.summary()
+def analytics_summary(days: int = 14):
+    return analytics.summary(days)
 
 
 @app.get("/api/router/summary")
-def router_summary():
+def router_summary(days: int = 14):
     """Measured routing economics per policy (route/cascade/auto):
     small-model share and savings vs. sending everything to the
     strongest model — computed from recorded traffic, not projected."""
-    return analytics.router_summary()
+    return analytics.router_summary(days)
 
 
 # --------------------------- tokenomics --------------------------------
@@ -624,7 +624,7 @@ async def chat_completions(req: ChatCompletionRequest,
                              usage.get("completion_tokens", 0),
                              int(upstream.elapsed.total_seconds() * 1000),
                              team_id=team["id"] if team else None,
-                             policy=policy)
+                             policy=policy, backend="real")
             body["modelect"] = {
                 "routed": is_routed,
                 "receipt": {

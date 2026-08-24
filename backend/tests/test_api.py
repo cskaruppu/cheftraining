@@ -277,7 +277,25 @@ def test_playground_and_analytics():
     assert r["results"][0]["cost"] > 0
     a = client.get("/api/analytics/summary").json()
     assert a["kpis"]["requests_total"] > 0
-    assert len(a["daily"]) >= 14
+    assert len(a["series"]) >= 13  # complete days only, today excluded
+    assert a["granularity"] == "day" and a["window_days"] == 14
+    # industry-standard KPIs: percentiles, success rate, deltas, throughput
+    k = a["kpis"]
+    assert k["p95_ms"] >= k["p50_ms"] > 0
+    assert 0 <= k["success_rate"] <= 100
+    assert k["tokens_in"] > 0 and k["tokens_out"] > 0
+    assert set(k["deltas"]) == {"requests_pct", "spend_pct", "p95_pct"}
+    # provider + hybrid estate splits
+    assert a["by_provider"] and a["by_provider"][0]["cost"] >= a["by_provider"][-1]["cost"]
+    assert a["hybrid"]["api"]["tokens"] > 0
+    assert a["model_count"] == len(a["by_model"])
+    # narrower window really narrows, hourly on the 24h view
+    d7 = client.get("/api/analytics/summary?days=7").json()
+    assert d7["kpis"]["requests"] <= a["kpis"]["requests"]
+    h = client.get("/api/analytics/summary?days=1").json()
+    assert h["granularity"] == "hour"
+    # recent rows carry routing provenance fields
+    assert {"policy", "backend"} <= set(a["recent"][0].keys())
 
 
 def test_serving_profiles():
