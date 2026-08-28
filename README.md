@@ -34,6 +34,8 @@ price-vs-quality scatter + spec matrix), **Playground** (one prompt
 across up to 3 models side by side).
 
 Product direction, positioning and roadmap: see [`docs/VISION.md`](docs/VISION.md).
+Complete end-to-end documentation — every tab, engine, formula and operations
+reference: [`docs/PRODUCT-GUIDE.md`](docs/PRODUCT-GUIDE.md).
 
 API highlights:
 
