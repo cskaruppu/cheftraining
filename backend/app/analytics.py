@@ -33,7 +33,8 @@ def _cost(model_id: str, tokens_in: int, tokens_out: int) -> float:
 
 def _row(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
          cached: bool, ts: datetime, team_id: str | None = None,
-         policy: str | None = None, backend: str | None = None) -> dict:
+         policy: str | None = None, backend: str | None = None,
+         agent_id: str | None = None, task_id: str | None = None) -> dict:
     return {
         "ts": ts.isoformat(),
         "day": ts.strftime("%Y-%m-%d"),
@@ -47,15 +48,19 @@ def _row(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
         "team_id": team_id,
         "policy": policy,
         "backend": backend,
+        "agent_id": agent_id,
+        "task_id": task_id,
     }
 
 
 def record(model_id: str, tokens_in: int, tokens_out: int, latency_ms: int,
            cached: bool = False, ts: datetime | None = None,
            team_id: str | None = None, policy: str | None = None,
-           backend: str | None = None):
+           backend: str | None = None, agent_id: str | None = None,
+           task_id: str | None = None):
     row = _row(model_id, tokens_in, tokens_out, latency_ms, cached,
-               ts or datetime.now(timezone.utc), team_id, policy, backend)
+               ts or datetime.now(timezone.utc), team_id, policy, backend,
+               agent_id, task_id)
     with engine.begin() as conn:
         conn.execute(insert(events_t).values(**row))
 

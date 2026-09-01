@@ -158,6 +158,37 @@ export default function Integrate() {
         </p>
       </div>
 
+      <div className="card mb-5">
+        <div className="flex items-center justify-between mb-1.5">
+          <h2 className="text-sm font-medium">Agent frameworks — cost-disciplined by default</h2>
+          <span className="chip !text-[10px] border-s1/50 text-s1">agentic era</span>
+        </div>
+        <p className="text-[11px] text-muted mb-3">
+          Point any agent framework at the gateway with <code>model: "route"</code> and every
+          sub-step is classified small-vs-strong automatically. Add an agent key plus the task
+          headers and the whole mission is metered against a budget — degrade at 100%, stop at
+          150% — with per-agent attribution and cost-per-outcome in Tokenomics.
+        </p>
+        <pre className="bg-page border border-edge rounded-lg px-4 py-3 text-[12px] leading-relaxed overflow-x-auto font-mono text-ink2">{`# LangChain / CrewAI / any OpenAI-compatible framework
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="${window.location.origin}/v1",
+    api_key="ak-<agent-key>",                    # per-agent attribution
+    default_headers={
+        "X-Task-Id": "research-job-42",          # one mission budget
+        "X-Task-Budget": "0.50",                 # this task may spend $0.50
+        "X-Delegation-Depth": "1",               # fork-bomb brake
+    },
+)
+resp = client.chat.completions.create(
+    model="route",                               # each step: small if simple
+    messages=[{"role": "user", "content": step_prompt}],
+)
+# when the mission succeeds:
+#   POST /v1/tasks/research-job-42/complete  -> feeds cost-per-outcome`}</pre>
+      </div>
+
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div>

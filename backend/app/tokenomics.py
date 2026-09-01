@@ -19,7 +19,7 @@ from sqlalchemy import func, insert, select, update
 
 from . import analytics
 from .catalog import MODELS_BY_ID
-from .db import engine, enforcement_t, events_t, teams_t
+from .db import ai_agents_t, engine, enforcement_t, events_t, teams_t
 
 CARBON_G_PER_1K_TOKENS = 0.2  # demo factor; production: per-GPU energy data
 
@@ -94,6 +94,7 @@ def seed():
                 "cost": round((tokens_in * m["input_price"]
                                + tokens_out * m["output_price"]) / 1e6, 6),
                 "team_id": "research-agents",
+                "agent_id": "scraper-agent",  # the agent that looped
             })
         conn.execute(insert(events_t), rows)
         # 3. teams with budgets scaled to observed 30d spend
@@ -106,12 +107,34 @@ def seed():
             conn.execute(insert(teams_t).values(
                 id=team_id, name=name, policy=policy, budget_usd=budget,
                 api_key=f"tk-{secrets.token_hex(12)}", enabled=True, **extra))
+        # 3b. demo AI agents under the teams, plus attribution for the
+        # scraper burst so the agentic spend tree has a story to tell
+        import time as _time
+        for aid, a_team, a_name in (
+                ("planner-agent", "research-agents", "Planner Agent"),
+                ("scraper-agent", "research-agents", "Scraper Agent"),
+                ("triage-agent", "support-bot", "Triage Agent")):
+            conn.execute(insert(ai_agents_t).values(
+                id=aid, team_id=a_team, name=a_name,
+                api_key=f"ak-{secrets.token_hex(12)}", created_at=_time.time()))
+
         # 4. the burst tripped the budget: log the degrade decision
         conn.execute(insert(enforcement_t).values(
             ts=(burst_ts + timedelta(minutes=3)).isoformat(),
             team_id="research-agents", action="DEGRADE",
             detail="budget hit 100% during output burst — policy 'degrade': "
                    "subsequent requests routed to phi-4 (no outage)"))
+
+
+def team_by_id(team_id: str) -> dict | None:
+    with engine.connect() as conn:
+        row = conn.execute(select(teams_t)
+                           .where(teams_t.c.id == team_id)).mappings().first()
+    return dict(row) if row else None
+
+
+def is_anomalous(team_id: str) -> bool:
+    return any(a["team_id"] == team_id for a in anomalies())
 
 
 def resolve_team(bearer_key: str | None) -> dict | None:
@@ -177,12 +200,15 @@ def precheck(team: dict, model: dict, est_input_tokens: int) -> dict | None:
 
 def update_team(team_id: str, fields: dict) -> dict:
     allowed = {"enabled", "budget_usd", "policy", "rate_limit_tpm",
-               "max_input_tokens", "max_output_tokens", "allowed_tiers"}
+               "max_input_tokens", "max_output_tokens", "allowed_tiers",
+               "loop_policy", "max_delegation_depth"}
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown field(s): {sorted(bad)}")
     if "policy" in fields and fields["policy"] not in ("alert", "degrade"):
         raise ValueError("policy must be 'alert' or 'degrade'")
+    if "loop_policy" in fields and fields["loop_policy"] not in (None, "off", "degrade"):
+        raise ValueError("loop_policy must be 'off' or 'degrade'")
     with engine.begin() as conn:
         row = conn.execute(select(teams_t).where(teams_t.c.id == team_id)).mappings().first()
         if row is None:

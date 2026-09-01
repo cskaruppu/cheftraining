@@ -22,8 +22,8 @@ from pydantic import BaseModel, Field
 
 import httpx
 
-from . import (agents, analytics, auth, clusters, config, deployments, evals,
-               insights, integration, ledger, migrate, registry, replay,
+from . import (agentic, agents, analytics, auth, clusters, config, deployments,
+               evals, insights, integration, ledger, migrate, registry, replay,
                resilience, tokenomics, work)
 from . import router as smart_router
 from .db import DATA_DIR, backend_name
@@ -205,7 +205,9 @@ class PlaygroundRequest(BaseModel):
 def _simulate_completion(model: dict, prompt: str,
                          team_id: str | None = None,
                          max_output_tokens: int | None = None,
-                         policy: str | None = None) -> dict:
+                         policy: str | None = None,
+                         agent_id: str | None = None,
+                         task_id: str | None = None) -> dict:
     """Demo mode: synthesizes a response instead of calling the provider.
 
     Production wiring point — replace with the provider adapter call
@@ -228,7 +230,8 @@ def _simulate_completion(model: dict, prompt: str,
     )
     cost = (tokens_in * model["input_price"] + tokens_out * model["output_price"]) / 1_000_000
     analytics.record(model["id"], tokens_in, tokens_out, latency,
-                     team_id=team_id, policy=policy, backend="simulated")
+                     team_id=team_id, policy=policy, backend="simulated",
+                     agent_id=agent_id, task_id=task_id)
     return {
         "model_id": model["id"], "model_name": model["name"], "provider": model["provider"],
         "text": text, "tokens_in": tokens_in, "tokens_out": tokens_out,
@@ -538,6 +541,8 @@ class TeamUpdate(BaseModel):
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
     allowed_tiers: str | None = None
+    loop_policy: str | None = None
+    max_delegation_depth: int | None = None
 
 
 @app.put("/api/teams/{team_id}")
@@ -600,6 +605,44 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
 
 
+@app.post("/v1/tasks/{task_id}/complete")
+def complete_task(task_id: str,
+                  authorization: str | None = Header(default=None)):
+    """Mark a mission-budgeted task complete (agent or team key).
+    Completed tasks power the cost-per-outcome metric."""
+    bearer = (authorization or "").removeprefix("Bearer ").strip() or None
+    ag = agentic.resolve_agent(bearer)
+    team = tokenomics.team_by_id(ag["team_id"]) if ag \
+        else tokenomics.resolve_team(bearer)
+    if not team:
+        raise HTTPException(401, "a team (tk-…) or agent (ak-…) key is required")
+    try:
+        return agentic.complete_task(task_id, team["id"])
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/tokenomics/agents")
+def tokenomics_agents():
+    """Agentic spend tree: per-agent calls, tokens, spend, tasks and
+    cost per completed task."""
+    return agentic.overview()
+
+
+class AgentCreateRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/teams/{team_id}/agents")
+def create_team_agent(team_id: str, req: AgentCreateRequest):
+    if not tokenomics.team_by_id(team_id):
+        raise HTTPException(404, "unknown team")
+    try:
+        return agentic.create_agent(team_id, req.name)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
 class RouterPreviewRequest(BaseModel):
     messages: list[ChatMessage]
 
@@ -615,9 +658,19 @@ def router_preview(req: RouterPreviewRequest):
 def _ledger_gateway(model: dict, policy_name: str, team: dict | None,
                     enforcement: dict | None, failover_info: dict | None,
                     router_info: dict | None, cascade_info: dict | None,
-                    receipt: dict) -> None:
+                    receipt: dict, task_info: dict | None = None,
+                    loop_info: dict | None = None) -> None:
     """One ledger entry per gateway decision — what was decided and why."""
-    if enforcement:
+    if loop_info:
+        kind = "enforcement"
+        summary = (f"loop-breaker: {loop_info['requested_model']} → "
+                   f"{loop_info['served_by']} — {loop_info['note']}")
+    elif task_info and task_info.get("enforcement"):
+        te = task_info["enforcement"]
+        kind = "enforcement"
+        summary = (f"task-budget degrade: {te['requested_model']} → "
+                   f"{te['served_by']} ({te['note']})")
+    elif enforcement:
         kind = "enforcement"
         summary = (f"budget degrade: {enforcement['requested_model']} → "
                    f"{enforcement['served_by']} (team {enforcement['team']} at "
@@ -668,13 +721,19 @@ def _cascade_route(prompt: str) -> tuple[dict, dict | None, str]:
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest,
-                           authorization: str | None = Header(default=None)):
+                           authorization: str | None = Header(default=None),
+                           x_task_id: str | None = Header(default=None),
+                           x_task_budget: float | None = Header(default=None),
+                           x_delegation_depth: int | None = Header(default=None)):
     """Unified API: `model: "auto"` routes via the recommender,
     `model: "cascade"` applies SLM-first routing with escalation, and
     `model: "route"` classifies the request BEFORE sending — exactly one
     model call, with a per-signal receipt of the decision.
-    A team API key in the Authorization header attributes the spend and
-    activates that team's tokenomics guardrails."""
+    A team key (tk-…) or agent key (ak-…) in the Authorization header
+    attributes the spend and activates that caller's guardrails.
+    Agentic headers: X-Task-Id (+ optional X-Task-Budget in USD) meter a
+    mission budget across all of a task's calls; X-Delegation-Depth is
+    checked against the team's maximum."""
     prompt = req.messages[-1].content if req.messages else ""
     cascade_info = None
     router_info = None
@@ -703,10 +762,66 @@ async def chat_completions(req: ChatCompletionRequest,
     if fo:
         model, failover_info = fo
 
-    # ---- tokenomics guardrails (enforced at the gateway) --------------
+    # ---- caller identity: team key (tk-) or agent sub-key (ak-) -------
     bearer = (authorization or "").removeprefix("Bearer ").strip() or None
-    team = tokenomics.resolve_team(bearer)
+    agent = agentic.resolve_agent(bearer)
+    team = tokenomics.team_by_id(agent["team_id"]) if agent \
+        else tokenomics.resolve_team(bearer)
     enforcement = None
+    task_info = None
+    loop_info = None
+
+    if team:
+        # delegation-depth guard: the agentic fork-bomb brake
+        max_depth = team.get("max_delegation_depth")
+        if max_depth and x_delegation_depth and x_delegation_depth > max_depth:
+            tokenomics.log_enforcement(
+                team["id"], "BLOCK",
+                f"delegation depth {x_delegation_depth} exceeds team max {max_depth}")
+            raise HTTPException(
+                403, f"delegation depth {x_delegation_depth} exceeds the team "
+                     f"maximum of {max_depth} — recursive agent spawning stopped")
+
+        # mission budget: meter this task across all of its calls
+        if x_task_id:
+            task = agentic.get_or_create_task(
+                x_task_id, team["id"], agent["id"] if agent else None, x_task_budget)
+            verdict = agentic.task_precheck(task)
+            task_info = {"id": task["id"], "budget_usd": task["budget_usd"],
+                         "spend_before_usd": round(agentic.task_spend(task["id"]), 4)}
+            if verdict and verdict["action"] == "block":
+                tokenomics.log_enforcement(team["id"], "BLOCK", verdict["reason"])
+                raise HTTPException(402, verdict["reason"])
+            if verdict and verdict["action"] == "degrade" \
+                    and model["size_class"] != "slm":
+                small = smart_router.small_model()
+                task_info["enforcement"] = {
+                    "policy": "task-budget degrade",
+                    "requested_model": model["id"], "served_by": small["id"],
+                    "note": verdict["reason"]}
+                tokenomics.log_enforcement(
+                    team["id"], "DEGRADE",
+                    f"task '{task['id']}' over budget — {model['id']} served "
+                    f"by {small['id']}")
+                model = small
+
+        # loop-breaker: contain an anomalous team automatically
+        if team.get("loop_policy") == "degrade" \
+                and tokenomics.is_anomalous(team["id"]) \
+                and model["size_class"] != "slm":
+            small = smart_router.small_model()
+            loop_info = {
+                "policy": "loop-breaker",
+                "requested_model": model["id"], "served_by": small["id"],
+                "note": "output volume anomalous vs this team's baseline — "
+                        "auto-contained on the smallest capable model until "
+                        "behavior normalizes"}
+            tokenomics.log_enforcement(
+                team["id"], "LOOPBREAK",
+                f"anomalous output volume — {model['id']} served by {small['id']}")
+            model = small
+
+    # ---- tokenomics guardrails (enforced at the gateway) --------------
     if team:
         est_input = max(8, len(prompt.split()) * 4 // 3)
         violation = tokenomics.precheck(team, model, est_input)
@@ -742,6 +857,8 @@ async def chat_completions(req: ChatCompletionRequest,
     backend_info = {"type": "simulated"}
     is_routed = req.model in ("auto", "cascade", "route")
     policy = req.model if is_routed else None
+    agent_id = agent["id"] if agent else None
+    task_id = task_info["id"] if task_info else None
     real_endpoint = work.ready_endpoint_for_model(model["id"])
     if real_endpoint and not req.stream:
         try:
@@ -758,7 +875,8 @@ async def chat_completions(req: ChatCompletionRequest,
                              usage.get("completion_tokens", 0),
                              int(upstream.elapsed.total_seconds() * 1000),
                              team_id=team["id"] if team else None,
-                             policy=policy, backend="real")
+                             policy=policy, backend="real",
+                             agent_id=agent_id, task_id=task_id)
             body["modelect"] = {
                 "routed": is_routed,
                 "receipt": {
@@ -770,11 +888,16 @@ async def chat_completions(req: ChatCompletionRequest,
                     **({"cascade": cascade_info} if cascade_info else {}),
                     **({"router": router_info} if router_info else {}),
                     **({"failover": failover_info} if failover_info else {}),
+                    **({"agent": {"id": agent["id"], "name": agent["name"]}}
+                       if agent else {}),
+                    **({"task": task_info} if task_info else {}),
+                    **({"loopbreak": loop_info} if loop_info else {}),
                 },
             }
             _ledger_gateway(model, req.model if is_routed else "direct",
                             team, enforcement, failover_info, router_info,
-                            cascade_info, body["modelect"]["receipt"])
+                            cascade_info, body["modelect"]["receipt"],
+                            task_info=task_info, loop_info=loop_info)
             return body
         except Exception as e:
             backend_info = {"type": "simulated-fallback",
@@ -785,7 +908,7 @@ async def chat_completions(req: ChatCompletionRequest,
         model, prompt,
         team_id=team["id"] if team else None,
         max_output_tokens=team.get("max_output_tokens") if team else None,
-        policy=policy)
+        policy=policy, agent_id=agent_id, task_id=task_id)
 
     # routing savings: what the strong model would have cost for this shape
     def _saved_vs_strong(strong: dict) -> float:
@@ -808,10 +931,15 @@ async def chat_completions(req: ChatCompletionRequest,
                    **({"enforcement": enforcement} if enforcement else {}),
                    **({"cascade": cascade_info} if cascade_info else {}),
                    **({"router": router_info} if router_info else {}),
-                   **({"failover": failover_info} if failover_info else {})}
+                   **({"failover": failover_info} if failover_info else {}),
+                   **({"agent": {"id": agent["id"], "name": agent["name"]}}
+                      if agent else {}),
+                   **({"task": task_info} if task_info else {}),
+                   **({"loopbreak": loop_info} if loop_info else {})}
     _ledger_gateway(model, req.model if is_routed else "direct",
                     team, enforcement, failover_info, router_info,
-                    cascade_info, receipt_obj)
+                    cascade_info, receipt_obj,
+                    task_info=task_info, loop_info=loop_info)
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())

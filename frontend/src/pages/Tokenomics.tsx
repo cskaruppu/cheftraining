@@ -41,6 +41,19 @@ const POLICY_LABEL: Record<string, string> = {
   auto: "auto — recommender routed",
 };
 
+interface AgentRow {
+  id: string;
+  name: string;
+  team_id: string;
+  api_key: string;
+  calls: number;
+  tokens: number;
+  spend: number;
+  tasks: number;
+  tasks_completed: number;
+  cost_per_outcome: number | null;
+}
+
 interface Overview {
   kpis: {
     tokens_30d: number;
@@ -65,11 +78,14 @@ const STATE_CHIP: Record<string, { cls: string; label: (t: TeamView) => string }
 export default function Tokenomics() {
   const [data, setData] = useState<Overview | null>(null);
   const [routing, setRouting] = useState<RouterSummary | null>(null);
+  const [agents, setAgents] = useState<AgentRow[]>([]);
   const [copied, setCopied] = useState("");
 
   const refresh = () => {
     fetch("/api/tokenomics").then((r) => r.json()).then(setData);
     fetch("/api/router/summary").then((r) => r.json()).then(setRouting);
+    fetch("/api/tokenomics/agents").then((r) => r.json())
+      .then((d) => setAgents(d.agents ?? [])).catch(() => {});
   };
 
   useEffect(() => {
@@ -199,6 +215,75 @@ export default function Tokenomics() {
             <p className="text-[11px] text-muted mt-2">
               Policy "degrade": at 100% of budget, requests are served by the smallest capable
               model instead of failing — the receipt records every enforcement.
+            </p>
+          </div>
+
+          <div className="card">
+            <div className="flex items-center justify-between mb-1.5">
+              <h2 className="text-sm font-medium">Agentic spend — team → agent</h2>
+              <span className="chip !text-[10px] border-s1/50 text-s1">agentic era</span>
+            </div>
+            <p className="text-[11px] text-muted mb-3">
+              Agents spend at machine speed, so attribution goes one level deeper than teams:
+              each agent has its own key (<code>ak-…</code>), mission budgets bound a task's
+              spend (<code>X-Task-Id</code> + <code>X-Task-Budget</code> headers — degrade at
+              100%, stop at 150%), and cost per <i>completed task</i> prices the work in
+              outcomes, not tokens.
+            </p>
+            {agents.length === 0 ? (
+              <p className="text-sm text-muted">No agents yet — create one per team via the API.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-muted border-b border-edge">
+                      <th className="py-1.5 pr-3 font-normal">Agent</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">Calls</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">Tokens</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">Spend</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">Tasks ✓</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">$/outcome</th>
+                      <th className="py-1.5 font-normal">Key</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agents.map((a) => (
+                      <tr key={a.id} className="border-b border-edge/50">
+                        <td className="py-2 pr-3">
+                          <div className="text-ink">{a.name}</div>
+                          <div className="text-[10px] text-muted">team: {a.team_id}</div>
+                        </td>
+                        <td className="py-2 pr-3 text-right text-ink2 tabular-nums">{fmtCompact(a.calls)}</td>
+                        <td className="py-2 pr-3 text-right text-ink2 tabular-nums">{fmtCompact(a.tokens)}</td>
+                        <td className="py-2 pr-3 text-right text-ink2 tabular-nums">{fmtMoney(a.spend)}</td>
+                        <td className="py-2 pr-3 text-right text-ink2 tabular-nums">
+                          {a.tasks_completed}/{a.tasks}
+                        </td>
+                        <td className="py-2 pr-3 text-right text-ink2 tabular-nums">
+                          {a.cost_per_outcome != null ? fmtMoney(a.cost_per_outcome) : "—"}
+                        </td>
+                        <td className="py-2">
+                          <button className="chip hover:!text-ink transition"
+                            title="copy this agent's key — spend under it is attributed to the agent, within the team's budget and guardrails"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(a.api_key);
+                              setCopied(a.id);
+                              setTimeout(() => setCopied(""), 1500);
+                            }}>
+                            {copied === a.id ? "copied ✓" : `${a.api_key.slice(0, 6)}…`}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-[11px] text-muted mt-2">
+              Loop-breaker: set a team's <code>loop_policy</code> to "degrade" and anomalous
+              output volume is auto-contained on the smallest capable model — receipted, logged
+              as LOOPBREAK, no outage. <code>X-Delegation-Depth</code> beyond the team maximum
+              is refused (the agentic fork-bomb brake).
             </p>
           </div>
         </div>

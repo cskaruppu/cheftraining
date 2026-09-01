@@ -316,6 +316,29 @@ complexity score vs threshold, and every fired signal chip (a dry-run via
   requests, small-model share, actual vs counterfactual-strong cost.
 - Every enforcement lands in both the enforcement log and the Decision Ledger.
 
+**Agentic tokenomics (the agentic-era layer).** Agents spend at machine
+speed, so attribution and control go one level deeper than teams:
+
+- **Agent identities** — sub-keys under a team (`ak-…`, minted via
+  `POST /api/teams/{id}/agents`). Spend under an agent key is attributed to
+  the agent *and* governed by its team's budget and guardrails. The
+  "Agentic spend — team → agent" card shows the tree.
+- **Mission budgets** — a task ("this research job may spend $0.50") is
+  declared with gateway headers `X-Task-Id` + `X-Task-Budget` and metered
+  across every call carrying the id. At 100 % of the task budget requests
+  degrade to the smallest capable model; past 150 % they are refused (402).
+  Degrade-before-block keeps an agent mid-task working, cheaply.
+- **Cost per outcome** — `POST /v1/tasks/{id}/complete` marks a mission done;
+  spend ÷ completed tasks prices agent work in outcomes, not tokens.
+- **Loop-breaker** — set a team's `loop_policy` to `degrade` and anomalous
+  output volume is auto-contained on the smallest capable model (logged as
+  `LOOPBREAK`, receipted) until behavior normalizes.
+- **Delegation-depth guard** — `X-Delegation-Depth` beyond the team's
+  `max_delegation_depth` is refused: the agentic fork-bomb brake.
+- **Router as the agent default** — point any OpenAI-compatible agent
+  framework at the gateway with `model:"route"` and every sub-step is
+  classified small-vs-strong automatically (snippet on Integrate & Verify).
+
 ### 4.13 Decision Ledger (Govern, admin)
 
 **What it does:** the governance record — an append-only ledger of **every

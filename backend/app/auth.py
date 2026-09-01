@@ -122,6 +122,7 @@ ADMIN_RULES = [
     ("GET", "/api/admin/"),
     ("PUT", "/api/admin/"),
     ("PUT", "/api/clusters/"),
+    ("POST", "/api/teams/"),
 ]
 
 

@@ -765,3 +765,98 @@ def test_cordon_maintenance_mode():
                  json={"cordoned": True}).status_code == 403
     assert client.put("/api/clusters/nope/cordon",
                       json={"cordoned": True}).status_code == 404
+
+
+def test_agent_identity_attribution():
+    ags = client.get("/api/tokenomics/agents").json()["agents"]
+    assert {a["id"] for a in ags} >= {"planner-agent", "scraper-agent", "triage-agent"}
+    scraper = next(a for a in ags if a["id"] == "scraper-agent")
+    assert scraper["api_key"].startswith("ak-")
+    assert scraper["spend"] > 0  # the seeded loop burst is attributed to it
+    # calling the gateway with an AGENT key attributes team AND agent
+    r = client.post("/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {scraper['api_key']}"},
+                    json={"model": "gemini-2.5-flash",
+                          "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    receipt = r.json()["modelect"]["receipt"]
+    assert receipt["agent"]["id"] == "scraper-agent"
+    # admin can mint a new agent under a team; users cannot
+    made = client.post("/api/teams/doc-pipeline/agents", json={"name": "Indexer Agent"})
+    assert made.status_code == 200 and made.json()["api_key"].startswith("ak-")
+    u = _user_client("doc-pipeline")
+    assert u.post("/api/teams/doc-pipeline/agents",
+                  json={"name": "x"}).status_code == 403
+
+
+def test_mission_budget_degrade_then_stop():
+    teams = {t["id"]: t for t in client.get("/api/tokenomics").json()["teams"]}
+    key = teams["doc-pipeline"]["api_key"]
+    # learn the deterministic cost of this call shape, then set the task
+    # budget to 80% of it: call 1 fits, call 2 lands in the degrade band
+    probe = client.post("/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {key}"},
+                        json={"model": "claude-opus-4.5",
+                              "messages": [{"role": "user", "content": "hello"}]}).json()
+    budget = probe["modelect"]["cost_usd"] * 0.8
+    hdr = {"Authorization": f"Bearer {key}",
+           "X-Task-Id": "task-msn-1", "X-Task-Budget": str(budget)}
+    r1 = client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "claude-opus-4.5",
+        "messages": [{"role": "user", "content": "hello"}]}).json()
+    assert r1["modelect"]["receipt"]["task"]["id"] == "task-msn-1"
+    assert r1["model"] == "claude-opus-4.5"  # spend was 0, within budget
+    # budget now exceeded (spend = 1.25x budget, under the 1.5x stop)
+    # -> degrade to the smallest capable model instead of failing
+    r2 = client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "claude-opus-4.5",
+        "messages": [{"role": "user", "content": "hello again"}]}).json()
+    te = r2["modelect"]["receipt"]["task"]["enforcement"]
+    assert te["policy"] == "task-budget degrade"
+    assert r2["model"] == te["served_by"] != "claude-opus-4.5"
+    # hard stop: a second task budgeted at HALF the call cost — after
+    # one call its spend is 2x budget (past the 1.5x stop) -> 402
+    hdr2 = {"Authorization": f"Bearer {key}",
+            "X-Task-Id": "task-msn-2",
+            "X-Task-Budget": str(probe["modelect"]["cost_usd"] * 0.5)}
+    client.post("/v1/chat/completions", headers=hdr2, json={
+        "model": "claude-opus-4.5",
+        "messages": [{"role": "user", "content": "hello"}]})
+    blocked = client.post("/v1/chat/completions", headers=hdr2, json={
+        "model": "phi-4", "messages": [{"role": "user", "content": "more"}]})
+    assert blocked.status_code == 402 and "budget" in blocked.json()["detail"]
+    # completing the task feeds cost-per-outcome
+    done = client.post("/v1/tasks/task-msn-1/complete",
+                       headers={"Authorization": f"Bearer {key}"}).json()
+    assert done["completed"] is True and done["spend_usd"] > 0
+
+
+def test_loop_breaker_and_delegation_depth():
+    teams = {t["id"]: t for t in client.get("/api/tokenomics").json()["teams"]}
+    # research-agents is anomalous (seeded burst); opt it into containment
+    client.put("/api/teams/research-agents", json={"loop_policy": "degrade"})
+    r = client.post("/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {teams['research-agents']['api_key']}"},
+                    json={"model": "gemini-2.5-pro",
+                          "messages": [{"role": "user", "content": "hi"}]}).json()
+    lb = r["modelect"]["receipt"]["loopbreak"]
+    assert lb["policy"] == "loop-breaker" and r["model"] == lb["served_by"]
+    log = client.get("/api/tokenomics").json()["enforcement_log"]
+    assert any(l["action"] == "LOOPBREAK" for l in log)
+    client.put("/api/teams/research-agents", json={"loop_policy": "off"})
+
+    # delegation-depth guard: depth 5 vs a max of 3 -> 403
+    client.put("/api/teams/doc-pipeline", json={"max_delegation_depth": 3})
+    r = client.post("/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {teams['doc-pipeline']['api_key']}",
+                             "X-Delegation-Depth": "5"},
+                    json={"model": "phi-4",
+                          "messages": [{"role": "user", "content": "spawn"}]})
+    assert r.status_code == 403 and "delegation depth" in r.json()["detail"]
+    # within the limit passes
+    r = client.post("/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {teams['doc-pipeline']['api_key']}",
+                             "X-Delegation-Depth": "2"},
+                    json={"model": "phi-4",
+                          "messages": [{"role": "user", "content": "ok"}]})
+    assert r.status_code == 200

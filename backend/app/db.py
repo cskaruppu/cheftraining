@@ -52,6 +52,8 @@ events_t = Table(
     Column("team_id", String(40), nullable=True, index=True),
     Column("policy", String(20), nullable=True),
     Column("backend", String(20), nullable=True),
+    Column("agent_id", String(60), nullable=True, index=True),
+    Column("task_id", String(80), nullable=True, index=True),
 )
 
 teams_t = Table(
@@ -66,6 +68,32 @@ teams_t = Table(
     Column("max_input_tokens", Integer, nullable=True),
     Column("max_output_tokens", Integer, nullable=True),
     Column("allowed_tiers", String(40), nullable=True),  # e.g. "slm,mid"
+    Column("loop_policy", String(20), nullable=True),    # off|degrade — loop-breaker
+    Column("max_delegation_depth", Integer, nullable=True),
+)
+
+# AI agents: sub-identities under a team — the agentic-era attribution
+# unit. Each has its own key so spend/limits/anomalies work per agent.
+ai_agents_t = Table(
+    "ai_agents", metadata,
+    Column("id", String(60), primary_key=True),
+    Column("team_id", String(40), index=True),
+    Column("name", String(120)),
+    Column("api_key", String(80), index=True),
+    Column("created_at", Float),
+)
+
+# Mission budgets: a task is a bounded unit of agent work ("this research
+# job may spend $0.50") metered across every call that carries its id.
+tasks_t = Table(
+    "agent_tasks", metadata,
+    Column("id", String(80), primary_key=True),
+    Column("team_id", String(40), index=True),
+    Column("agent_id", String(60), nullable=True),
+    Column("budget_usd", Float, nullable=True),
+    Column("created_at", Float),
+    Column("completed", Boolean, default=False),
+    Column("completed_at", Float, nullable=True),
 )
 
 agents_t = Table(
@@ -180,6 +208,14 @@ if "backend" not in _cols:
     with engine.begin() as _conn:
         _conn.execute(_sa_text(
             "ALTER TABLE analytics_events ADD COLUMN backend VARCHAR(20)"))
+if "agent_id" not in _cols:
+    with engine.begin() as _conn:
+        _conn.execute(_sa_text(
+            "ALTER TABLE analytics_events ADD COLUMN agent_id VARCHAR(60)"))
+if "task_id" not in _cols:
+    with engine.begin() as _conn:
+        _conn.execute(_sa_text(
+            "ALTER TABLE analytics_events ADD COLUMN task_id VARCHAR(80)"))
 
 _team_cols = {c["name"] for c in _sa_inspect(engine).get_columns("teams")}
 _TEAM_MIGRATIONS = {
@@ -188,6 +224,8 @@ _TEAM_MIGRATIONS = {
     "max_input_tokens": "ALTER TABLE teams ADD COLUMN max_input_tokens INTEGER",
     "max_output_tokens": "ALTER TABLE teams ADD COLUMN max_output_tokens INTEGER",
     "allowed_tiers": "ALTER TABLE teams ADD COLUMN allowed_tiers VARCHAR(40)",
+    "loop_policy": "ALTER TABLE teams ADD COLUMN loop_policy VARCHAR(20)",
+    "max_delegation_depth": "ALTER TABLE teams ADD COLUMN max_delegation_depth INTEGER",
 }
 for _name, _ddl in _TEAM_MIGRATIONS.items():
     if _name not in _team_cols:
