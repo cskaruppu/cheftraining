@@ -40,6 +40,9 @@ app.add_middleware(
 
 analytics.seed()
 
+from . import demofill  # noqa: E402  (needs every engine imported first)
+demofill.seed()
+
 # Paths that never require a portal session: health, the OpenAI-compatible
 # gateway (team API keys are its auth), login, agent reports (enrollment
 # token is their auth), and the static UI.
