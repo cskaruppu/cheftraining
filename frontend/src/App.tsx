@@ -350,7 +350,7 @@ export default function App() {
           <div className="h-px bg-gradient-to-r from-s1/50 via-s3/30 to-transparent" />
           <div className="px-5 py-3 flex items-center justify-between">
             <span className="text-[10px] text-muted tracking-wide">© 2026 Modelect</span>
-            <span className="chip !text-[10px] !py-0">v1.7</span>
+            <span className="chip !text-[10px] !py-0">v1.8</span>
           </div>
         </div>
       </aside>
@@ -434,7 +434,7 @@ export default function App() {
           <div className="flex items-center gap-2 text-[11px]">
             <a href="/docs" target="_blank" rel="noreferrer" className="chip hover:!text-ink transition">API docs</a>
             <span className="chip">gateway /v1 · OpenAI-compatible</span>
-            <span className="chip">v1.7</span>
+            <span className="chip">v1.8</span>
           </div>
         </footer>
       </main>

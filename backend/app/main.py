@@ -30,7 +30,7 @@ from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
 from .recommender import recommend, routing_receipt, similar_models
 
-app = FastAPI(title="Modelect — Multi-LLM Orchestrator", version="0.1.0-demo")
+app = FastAPI(title="Modelect — Multi-LLM Orchestrator", version="0.2.0-demo")
 
 app.add_middleware(
     CORSMiddleware,

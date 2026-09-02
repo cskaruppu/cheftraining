@@ -39,9 +39,29 @@ def _event(ts, mid, tin, tout, lat, **kw):
             "team_id": None, "agent_id": None, "task_id": None, **kw}
 
 
+def _ensure_agents():
+    """Demo agents must exist even on databases created before the
+    agentic module (team seeding exits early there and never reaches
+    agent creation). Idempotent, runs on every demo-mode boot."""
+    from .db import ai_agents_t
+    import secrets
+    with engine.begin() as conn:
+        have = {r.id for r in conn.execute(select(ai_agents_t.c.id))}
+        for aid, team, name in (
+                ("planner-agent", "research-agents", "Planner Agent"),
+                ("scraper-agent", "research-agents", "Scraper Agent"),
+                ("triage-agent", "support-bot", "Triage Agent")):
+            if aid not in have:
+                conn.execute(insert(ai_agents_t).values(
+                    id=aid, team_id=team, name=name,
+                    api_key=f"ak-{secrets.token_hex(12)}",
+                    created_at=time.time()))
+
+
 def seed():
     if not analytics.demo_seed_enabled():
         return
+    _ensure_agents()
     if resilience.kv_get(_FLAG):
         return
     rng = random.Random(7)
@@ -209,8 +229,11 @@ def seed():
                          "util_pct": max(0, min(100, base + wobble))})
 
     with engine.begin() as conn:
+        existing_tasks = {r.id for r in conn.execute(select(tasks_t.c.id))}
+        tasks = [t for t in tasks if t["id"] not in existing_tasks]
         conn.execute(insert(events_t), events)
-        conn.execute(insert(tasks_t), tasks)
+        if tasks:
+            conn.execute(insert(tasks_t), tasks)
         if ledgers:
             conn.execute(insert(ledger_t), ledgers)
         conn.execute(insert(cluster_util_t), hist)
