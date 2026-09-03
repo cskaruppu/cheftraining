@@ -1,0 +1,140 @@
+{{- if .Values.components.agent }}
+{{- $r1 := required "agent.controlPlaneUrl is required (https://<management-plane-host>)" .Values.agent.controlPlaneUrl }}
+{{- $r2 := required "agent.token is required (enrollment token from the GPU Fleet page)" .Values.agent.token }}
+{{- $r3 := required "agent.clusterId is required (stable id for this cluster)" .Values.agent.clusterId }}
+# Workload-cluster profile: the outbound-only Modelect agent. Installs
+# into the release namespace; reads nodes cluster-wide (read-only),
+# executes vLLM serving only inside its own namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: modelect-agent
+  labels:
+    app: modelect-agent
+    {{- include "modelect.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: modelect-agent-read
+  labels:
+    app: modelect-agent
+    {{- include "modelect.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: modelect-agent-read
+  labels:
+    app: modelect-agent
+    {{- include "modelect.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: modelect-agent-read
+subjects:
+  - kind: ServiceAccount
+    name: modelect-agent
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: modelect-agent-serve
+  labels:
+    app: modelect-agent
+    {{- include "modelect.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, delete, patch]
+  - apiGroups: [""]
+    resources: [services, pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [route.openshift.io]
+    resources: [routes]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: modelect-agent-serve
+  labels:
+    app: modelect-agent
+    {{- include "modelect.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: modelect-agent-serve
+subjects:
+  - kind: ServiceAccount
+    name: modelect-agent
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: modelect-agent
+  labels:
+    app: modelect-agent
+    {{- include "modelect.labels" . | nindent 4 }}
+stringData:
+  MODELECT_URL: {{ .Values.agent.controlPlaneUrl | quote }}
+  MODELECT_AGENT_TOKEN: {{ .Values.agent.token | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modelect-agent
+  labels:
+    app: modelect-agent
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: modelect-agent
+  template:
+    metadata:
+      labels:
+        app: modelect-agent
+        {{- include "modelect.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: modelect-agent
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: {{ include "modelect.agentImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: modelect-agent
+          env:
+            - name: CLUSTER_ID
+              value: {{ .Values.agent.clusterId | quote }}
+            - name: CLUSTER_NAME
+              value: {{ .Values.agent.clusterName | default .Values.agent.clusterId | quote }}
+            - name: REGION
+              value: {{ .Values.agent.region | quote }}
+            - name: RESIDENCY
+              value: {{ .Values.agent.residency | quote }}
+            - name: COST_FACTOR
+              value: {{ .Values.agent.costFactor | quote }}
+            - name: INTERVAL_S
+              value: {{ .Values.agent.intervalSeconds | quote }}
+            - name: INSECURE_TLS
+              value: {{ .Values.agent.insecureTls | quote }}
+            - name: SERVING_IMAGE
+              value: {{ .Values.agent.servingImage | quote }}
+            - name: AGENT_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+{{- end }}

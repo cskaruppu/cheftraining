@@ -1,0 +1,19 @@
+# Management-plane profile: the full control plane on a small, GPU-less
+# cluster — UI + control API + a dedicated, horizontally-scaled gateway.
+# ("vCenter": it orchestrates; models run on workload clusters.)
+#
+#   helm install modelect ./helm/modelect \
+#     -f helm/modelect/values-management.yaml \
+#     --set image.namespace=<quay-user> \
+#     --set database.url=postgresql://user:pass@host:5432/modelect
+#
+# database.url is REQUIRED here: the split gateway and any control-API
+# scale-out share PostgreSQL, never the RWO SQLite PVC.
+components:
+  controlApi: true
+  ui: true
+  gateway: true
+  agent: false
+
+persistence:
+  enabled: false   # PostgreSQL mode — no data PVC

@@ -1,11 +1,25 @@
 # Modelect Helm values.
 # Minimum you must set: image.namespace (your quay.io user/org).
+#
+# Install profiles (pass with -f on top of this file):
+#   values-management.yaml  full control plane, split gateway (needs database.url)
+#   values-workload.yaml    agent-only install for a GPU cluster
+
+# Which components this install runs. The default is the combined
+# single-cluster demo shape; the profile files flip these.
+components:
+  controlApi: true    # portal APIs + engines (+ /v1 compatibility path)
+  ui: true
+  gateway: false      # dedicated /v1-only deployment (MODELECT_ROLE=gateway);
+                      # requires database.url — RWO SQLite can't be shared
+  agent: false        # workload-cluster profile: the Modelect agent only
 
 image:
   registry: quay.io
   namespace: ""            # REQUIRED, e.g. "cskaruppu"
   apiRepository: modelect-api
   uiRepository: modelect-ui
+  agentRepository: modelect-agent
   tag: latest
   pullPolicy: Always      # same-tag redeploys always pick up the newest image
 
@@ -18,11 +32,34 @@ api:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {cpu: 500m, memory: 512Mi}
 
+gateway:
+  replicas: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+
 ui:
   replicas: 1
   resources:
     requests: {cpu: 50m, memory: 64Mi}
     limits: {cpu: 250m, memory: 128Mi}
+
+# Agent settings — used only when components.agent is true
+# (the workload-cluster install profile).
+agent:
+  controlPlaneUrl: ""      # REQUIRED: https://<management-plane-host>
+  token: ""                # REQUIRED: enrollment token from the GPU Fleet page
+  clusterId: ""            # REQUIRED: stable id, e.g. "caaslab"
+  clusterName: ""          # display name (default: clusterId)
+  region: ""
+  residency: ""
+  costFactor: "1.0"
+  intervalSeconds: "30"
+  insecureTls: "0"         # "1" for lab routes with self-signed certs
+  servingImage: vllm/vllm-openai:latest
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {cpu: 100m, memory: 64Mi}
 
 ingress:
   # "route"   -> OpenShift Route (edge TLS)
@@ -43,4 +80,8 @@ persistence:
 database:
   # PostgreSQL DSN, e.g. postgresql://user:pass@host:5432/modelect.
   # When set, the API uses PostgreSQL and no data PVC is mounted.
+  # REQUIRED when components.gateway is true.
   url: ""
+
+# Optional: passed to the API as DEMO_SEED ("0" = real traffic only)
+demoSeed: ""

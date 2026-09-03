@@ -141,6 +141,25 @@ helm upgrade --install modelect helm/modelect -n llm-orchestrator \
   --set image.tag=v0.2.0 --set ingress.type=route   # or ingress + ingress.host
 ```
 
+**Install profiles** — the management/workload plane split as Helm values:
+
+```bash
+# Management plane (GPU-less cluster): UI + control API + dedicated
+# 2-replica gateway; PostgreSQL required
+helm install modelect helm/modelect -f helm/modelect/values-management.yaml \
+  --set image.namespace=<quay-user> \
+  --set database.url=postgresql://user:pass@host:5432/modelect
+
+# Workload cluster (any GPU cluster): outbound-only agent, nothing else
+helm install modelect-agent helm/modelect -f helm/modelect/values-workload.yaml \
+  --set image.namespace=<quay-user> \
+  --set agent.controlPlaneUrl=https://<management-plane-host> \
+  --set agent.token=ma-... --set agent.clusterId=my-gpu-cluster
+```
+
+Chart validation (lints + templates every profile when `helm` is
+installed; structural checks otherwise): `./scripts/validate-chart.sh`.
+
 ### Step-by-step alternative (OpenShift)
 
 ```bash

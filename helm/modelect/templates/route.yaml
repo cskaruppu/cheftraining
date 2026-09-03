@@ -1,4 +1,4 @@
-{{- if eq .Values.ingress.type "route" }}
+{{- if and .Values.components.ui (eq .Values.ingress.type "route") }}
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:

@@ -1,0 +1,18 @@
+# Workload-cluster profile: agent-only install for a GPU cluster.
+# ("ESXi host": it runs models; the management plane orchestrates.)
+# Outbound-only — this cluster never opens an inbound port for Modelect.
+#
+#   helm install modelect-agent ./helm/modelect \
+#     -f helm/modelect/values-workload.yaml \
+#     --set image.namespace=<quay-user> \
+#     --set agent.controlPlaneUrl=https://<management-plane-host> \
+#     --set agent.token=ma-... \
+#     --set agent.clusterId=my-gpu-cluster
+components:
+  controlApi: false
+  ui: false
+  gateway: false
+  agent: true
+
+persistence:
+  enabled: false

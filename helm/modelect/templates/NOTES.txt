@@ -16,3 +16,15 @@ then open http://localhost:8080
 {{- end }}
 
 Gateway (OpenAI-compatible): <dashboard-url>/v1/chat/completions
+{{- if .Values.components.gateway }}
+Dedicated gateway ({{ .Values.gateway.replicas }} replicas, /v1 only):
+  echo "https://$(oc -n {{ .Release.Namespace }} get route orchestrator-gateway -o jsonpath='{.spec.host}')"
+{{- end }}
+{{- if .Values.components.agent }}
+
+Workload-cluster profile installed: the agent will appear on the
+management plane's GPU Fleet page within ~30s of its first heartbeat.
+{{- end }}
+
+Install profiles: values-management.yaml (full plane + split gateway),
+values-workload.yaml (agent only, for GPU clusters).

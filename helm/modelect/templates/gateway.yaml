@@ -1,57 +1,44 @@
-{{- if .Values.components.controlApi }}
+{{- if .Values.components.gateway }}
+{{- $dburl := required "database.url is required when components.gateway is enabled — the RWO SQLite PVC cannot be shared between gateway and control pods" .Values.database.url }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: orchestrator-api
+  name: orchestrator-gateway
   labels:
-    app: orchestrator-api
+    app: orchestrator-gateway
     {{- include "modelect.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.api.replicas }}
-  strategy: {type: Recreate}
+  replicas: {{ .Values.gateway.replicas }}
   selector:
     matchLabels:
-      app: orchestrator-api
+      app: orchestrator-gateway
   template:
     metadata:
       labels:
-        app: orchestrator-api
+        app: orchestrator-gateway
         {{- include "modelect.labels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if and .Values.persistence.enabled (not .Values.database.url) }}
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: modelect-data
-      {{- end }}
       containers:
-        - name: api
+        - name: gateway
           image: {{ include "modelect.apiImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 8000
-          {{- if or .Values.database.url .Values.demoSeed }}
           env:
-            {{- if .Values.database.url }}
+            - name: MODELECT_ROLE
+              value: gateway
             - name: DATABASE_URL
               value: {{ .Values.database.url | quote }}
-            {{- end }}
             {{- if .Values.demoSeed }}
             - name: DEMO_SEED
               value: {{ .Values.demoSeed | quote }}
             {{- end }}
-          {{- end }}
-          {{- if and .Values.persistence.enabled (not .Values.database.url) }}
-          volumeMounts:
-            - name: data
-              mountPath: /opt/app/data
-          {{- end }}
           resources:
-            {{- toYaml .Values.api.resources | nindent 12 }}
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
           readinessProbe:
             httpGet: {path: /healthz, port: 8000}
             initialDelaySeconds: 3
@@ -62,14 +49,33 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: orchestrator-api
+  name: orchestrator-gateway
   labels:
-    app: orchestrator-api
+    app: orchestrator-gateway
     {{- include "modelect.labels" . | nindent 4 }}
 spec:
   selector:
-    app: orchestrator-api
+    app: orchestrator-gateway
   ports:
     - port: 8000
       targetPort: 8000
+{{- if eq .Values.ingress.type "route" }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: orchestrator-gateway
+  labels:
+    app: orchestrator-gateway
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    name: orchestrator-gateway
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}
 {{- end }}
