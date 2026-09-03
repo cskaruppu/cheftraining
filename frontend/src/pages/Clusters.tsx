@@ -235,6 +235,20 @@ export default function Clusters() {
   const [showConnect, setShowConnect] = useState(false);
   const [filter, setFilter] = useState<"all" | "gpu-ready" | "gpu-unmanaged" | "cpu-only" | "live">("all");
 
+  // per-cluster enrollment token, shown once after minting: rotating it
+  // invalidates the old one immediately, so the agent needs the new value
+  const [rotated, setRotated] = useState<Record<string, string>>({});
+
+  const rotateToken = async (c: Cluster) => {
+    if (!confirm(`Rotate the enrollment token for ${c.name}?\n\n`
+      + "The current token stops working immediately — update the agent's "
+      + "MODELECT_TOKEN secret on that cluster or its heartbeat will fail.")) return;
+    const r = await fetch(`/api/agents/clusters/${c.id}/token`, { method: "POST" });
+    if (!r.ok) return;
+    const d = await r.json();
+    setRotated((p) => ({ ...p, [c.id]: d.token }));
+  };
+
   const toggleCordon = async (c: Cluster) => {
     await fetch(`/api/clusters/${c.id}/cordon`, {
       method: "PUT",
@@ -452,6 +466,13 @@ export default function Clusters() {
               <div className="border-t border-edge pt-3 mt-auto">
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="text-xs text-muted">Deployments ({deps.length})</div>
+                  {c.source === "agent" && (
+                    <button className="chip !text-[10px] hover:!text-ink transition"
+                      title="mint a fresh per-cluster enrollment token — a leaked token then costs you one cluster, not the fleet"
+                      onClick={() => rotateToken(c)}>
+                      rotate token
+                    </button>
+                  )}
                   <button className="chip !text-[10px] hover:!text-ink transition"
                     title={c.cordoned
                       ? "return this cluster to the schedulable pool"
@@ -460,6 +481,22 @@ export default function Clusters() {
                     {c.cordoned ? "uncordon" : "cordon"}
                   </button>
                 </div>
+                {rotated[c.id] && (
+                  <div className="mb-2 border border-s3/40 rounded-lg px-2.5 py-2">
+                    <div className="text-[10px] text-s3 mb-1">
+                      new enrollment token — shown once, set it as MODELECT_TOKEN on this cluster
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <code className="bg-raised rounded px-2 py-1 text-[10px] text-ink2 flex-1 truncate">
+                        {rotated[c.id]}
+                      </code>
+                      <button className="chip !text-[10px] hover:!text-ink transition"
+                        onClick={() => navigator.clipboard?.writeText(rotated[c.id])}>
+                        copy
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {deps.length === 0 ? (
                   <div className="text-xs text-muted">none scheduled here yet</div>
                 ) : (

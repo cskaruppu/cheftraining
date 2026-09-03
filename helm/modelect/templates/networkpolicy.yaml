@@ -1,0 +1,135 @@
+{{- if .Values.networkPolicies.enabled }}
+# Default-deny ingress for the release namespace, then re-open only the
+# edges the product actually needs:
+#   internet -> ui:8080, internet -> gateway:8000   (exposed surfaces)
+#   ui/gateway -> api:8000                          (portal APIs, internal)
+#   api/gateway -> postgres:5432                    (state, internal)
+# Egress is left alone on purpose: the agent dials out to the control
+# plane and providers, and pods need DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modelect-default-deny-ingress
+  labels:
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+{{- if .Values.components.ui }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modelect-allow-ui
+  labels:
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: orchestrator-ui
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+{{- end }}
+{{- if .Values.components.gateway }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modelect-allow-gateway
+  labels:
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: orchestrator-gateway
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8000
+          protocol: TCP
+{{- end }}
+{{- if .Values.components.controlApi }}
+---
+# The control API is not an exposed edge in the split topology: only the
+# UI (portal calls) and the gateway (shared engines) may reach it. When
+# the UI is exposed through the router, that Route targets the UI pod,
+# which proxies /api itself.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modelect-allow-api-from-frontends
+  labels:
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: orchestrator-api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: orchestrator-ui
+        - podSelector:
+            matchLabels:
+              app: orchestrator-gateway
+        {{- with .Values.networkPolicies.extraApiIngressSelectors }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - port: 8000
+          protocol: TCP
+{{- if .Values.networkPolicies.allowApiFromIngress }}
+---
+# Opt-in: some clusters route /api straight at the API service (no UI
+# proxy). This re-opens api:8000 to everything, so keep it off unless
+# your Route/Ingress points at orchestrator-api.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modelect-allow-api-ingress
+  labels:
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: orchestrator-api
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8000
+          protocol: TCP
+{{- end }}
+{{- end }}
+{{- if .Values.networkPolicies.postgresSelector }}
+---
+# In-namespace PostgreSQL: reachable only from the two planes that hold
+# state. Set networkPolicies.postgresSelector to your DB pod's labels
+# (e.g. {name: postgresql}); leave empty for a managed/external DB.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modelect-allow-postgres
+  labels:
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.networkPolicies.postgresSelector | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: orchestrator-api
+        - podSelector:
+            matchLabels:
+              app: orchestrator-gateway
+      ports:
+        - port: {{ .Values.networkPolicies.postgresPort }}
+          protocol: TCP
+{{- end }}
+{{- end }}

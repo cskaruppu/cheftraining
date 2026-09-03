@@ -510,8 +510,51 @@ an automatic `rollout restart` on redeploys. Alternatives: Helm chart
 | `GET /api/tokenomics`, `PUT /api/teams/{id}` | govern |
 | `GET /api/ledger` (+`/export`) | decision ledger |
 | `GET /api/analytics/summary?days=`, `/api/router/summary`, `/api/dashboard/admin` | dashboards |
-| `GET /api/clusters`, `PUT /api/clusters/{id}/cordon`, `GET /api/agents/token`, `POST /api/agent/report` | fleet |
+| `GET /api/clusters`, `PUT /api/clusters/{id}/cordon`, `GET /api/agents/token`, `POST /api/agents/clusters/{id}/token`, `POST /api/agent/v1/report` | fleet |
 | `PUT /api/admin/outage`, `PUT /api/admin/webhook`, `GET/PUT /api/config` | settings |
+| `GET /metrics`, `GET /healthz` | Prometheus scrape, probes (no session) |
+
+**Observability — `GET /metrics`**
+
+Prometheus text exposition (0.0.4), per replica, no extra dependency:
+
+| Series | Type | Use |
+|---|---|---|
+| `modelect_http_requests_total{surface,method,status}` | counter | RPS and error rate, gateway split from portal |
+| `modelect_gateway_request_seconds` | histogram | latency SLO / HPA signal (buckets 0.1s→10s) |
+| `modelect_gateway_tokens_total{direction}` | counter | token throughput in/out |
+| `modelect_gateway_cost_usd_total` | counter | spend rate — alert on the derivative, not the total |
+| `modelect_enforcement_total{action}` | counter | guardrails firing (BUDGET/DEGRADE/BLOCK/LOOPBREAK/ANOMALY) |
+
+`/metrics` carries no keys, tokens or prompt text, so it stays session-free
+for scrapers. Counters are per-process: `sum()` across replicas in PromQL.
+
+**Enrollment tokens — fleet-wide vs per-cluster**
+
+The install-wide bootstrap token (GPU Fleet → Connect a cluster) still
+enrolls anything, which is convenient and blast-radius-wide. Each live
+cluster card therefore has **rotate token**: it mints a token bound to that
+cluster only (`POST /api/agents/clusters/{id}/token`, admin-only, receipted
+in the Decision Ledger). A leaked per-cluster token costs you one cluster,
+not the fleet. Re-minting *is* the rotation — the previous value stops
+working immediately, so update the agent's `MODELECT_AGENT_TOKEN` secret in
+the same maintenance window. Reports never overwrite a stored token, and a
+minted-but-not-yet-enrolled cluster shows no fleet card until its first
+heartbeat.
+
+**Hardening the namespace (Helm)**
+
+`networkPolicies.enabled=true` writes a default-deny ingress policy plus the
+only edges the product needs: `ui:8080` and `gateway:8000` open to the
+router, `api:8000` reachable only from UI/gateway pods, and — when
+`networkPolicies.postgresSelector` points at an in-namespace database —
+`5432` only from API/gateway. It ships off, because a wrong policy looks
+exactly like an outage; enable it once your topology is settled
+(`allowApiFromIngress` if a Route targets the API directly,
+`extraApiIngressSelectors` for your Prometheus). The split gateway also gets
+a `PodDisruptionBudget` (`minAvailable: 1`, only above one replica) and a
+*preferred* pod anti-affinity, so drains and upgrades can't take the request
+path down while a single-node lab still schedules both replicas.
 
 ---
 

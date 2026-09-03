@@ -225,6 +225,8 @@ def update_team(team_id: str, fields: dict) -> dict:
 
 
 def log_enforcement(team_id: str, action: str, detail: str):
+    from . import metrics
+    metrics.inc("modelect_enforcement_total", {"action": action})
     with engine.begin() as conn:
         conn.execute(insert(enforcement_t).values(
             ts=_now().isoformat(), team_id=team_id, action=action, detail=detail))

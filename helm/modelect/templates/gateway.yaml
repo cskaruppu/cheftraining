@@ -22,6 +22,17 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Spread replicas across nodes when the cluster can: preferred, so
+      # a single-node lab still schedules both.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: orchestrator-gateway
       containers:
         - name: gateway
           image: {{ include "modelect.apiImage" . }}

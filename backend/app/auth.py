@@ -128,6 +128,7 @@ ADMIN_RULES = [
     ("POST", "/api/teams/"),
     ("POST", "/api/deployments/"),   # sleep/wake lifecycle (create is
                                      # /api/deployments without the slash)
+    ("POST", "/api/agents/"),        # enrollment-token minting/rotation
 ]
 
 

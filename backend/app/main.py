@@ -55,6 +55,9 @@ demofill.seed()
 _SESSION_EXEMPT = ("/healthz", "/v1/", "/api/auth/", "/api/agent/")
 
 
+from . import metrics  # noqa: E402
+
+
 @app.middleware("http")
 async def _session_gate(request: Request, call_next):
     path = request.url.path
@@ -63,8 +66,28 @@ async def _session_gate(request: Request, call_next):
         try:
             request.state.user = auth.authorize(request)
         except HTTPException as e:
+            metrics.inc("modelect_http_requests_total",
+                        {"surface": "portal", "method": request.method,
+                         "status": str(e.status_code)})
             return JSONResponse({"detail": e.detail}, status_code=e.status_code)
-    return await call_next(request)
+    started = time.monotonic()
+    response = await call_next(request)
+    elapsed = time.monotonic() - started
+    surface = ("gateway" if path.startswith("/v1") else
+               "portal" if path.startswith("/api") else "other")
+    metrics.inc("modelect_http_requests_total",
+                {"surface": surface, "method": request.method,
+                 "status": str(response.status_code)})
+    if surface == "gateway":
+        metrics.observe_gateway_seconds(elapsed)
+    return response
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    """Prometheus exposition — request/token/cost/enforcement counters
+    and the gateway latency histogram. Per-replica, as Prometheus expects."""
+    return Response(metrics.render(), media_type="text/plain; version=0.0.4")
 
 
 @app.get("/healthz")
@@ -242,6 +265,9 @@ def _simulate_completion(model: dict, prompt: str,
     analytics.record(model["id"], tokens_in, tokens_out, latency,
                      team_id=team_id, policy=policy, backend="simulated",
                      agent_id=agent_id, task_id=task_id)
+    metrics.inc("modelect_gateway_tokens_total", {"direction": "in"}, tokens_in)
+    metrics.inc("modelect_gateway_tokens_total", {"direction": "out"}, tokens_out)
+    metrics.inc("modelect_gateway_cost_usd_total", value=cost)
     return {
         "model_id": model["id"], "model_name": model["name"], "provider": model["provider"],
         "text": text, "tokens_in": tokens_in, "tokens_out": tokens_out,
@@ -363,7 +389,7 @@ class AgentReport(BaseModel):
 @app.post("/api/agent/report")
 def agent_report(req: AgentReport,
                  x_agent_token: str | None = Header(default=None)):
-    if not agents.token_valid(x_agent_token):
+    if not agents.token_valid_for(x_agent_token, req.cluster_id):
         raise HTTPException(401, "invalid or missing agent enrollment token")
     return agents.upsert_report(req.model_dump())
 
@@ -374,11 +400,23 @@ def agents_token(request: Request):
     return {"token": agents.enroll_token()}
 
 
+@app.post("/api/agents/clusters/{cluster_id}/token")
+def mint_agent_token(cluster_id: str):
+    """Mint (or rotate) a per-cluster enrollment token. Rotation
+    invalidates the previous token immediately — a stolen token then
+    compromises one cluster, not the fleet. Ledgered."""
+    token = agents.mint_cluster_token(cluster_id)
+    ledger.record("placement", "-",
+                  summary=f"enrollment token rotated for cluster '{cluster_id}'",
+                  receipt={"cluster_id": cluster_id})
+    return {"cluster_id": cluster_id, "token": token}
+
+
 @app.get("/api/agent/v1/work")
 @app.get("/api/agent/work")
 def agent_work(cluster_id: str,
                x_agent_token: str | None = Header(default=None)):
-    if not agents.token_valid(x_agent_token):
+    if not agents.token_valid_for(x_agent_token, cluster_id):
         raise HTTPException(401, "invalid or missing agent enrollment token")
     return {"orders": work.orders_for(cluster_id)}
 
@@ -393,7 +431,9 @@ class WorkStatus(BaseModel):
 @app.post("/api/agent/work/{order_id}")
 def agent_work_status(order_id: str, req: WorkStatus,
                       x_agent_token: str | None = Header(default=None)):
-    if not agents.token_valid(x_agent_token):
+    order = work.state_for(order_id)
+    if not agents.token_valid_for(x_agent_token,
+                                  order["cluster_id"] if order else None):
         raise HTTPException(401, "invalid or missing agent enrollment token")
     if req.state not in ("starting", "pulling", "ready", "error", "deleted",
                          "sleeping"):
@@ -1050,7 +1090,7 @@ class _SPAStaticFiles(StaticFiles):
 if _ROLE == "gateway":
     app.router.routes = [
         r for r in app.router.routes
-        if getattr(r, "path", "") == "/healthz"
+        if getattr(r, "path", "") in ("/healthz", "/metrics")
         or getattr(r, "path", "").startswith("/v1")]
 
 _static = Path(__file__).resolve().parent.parent / "static"

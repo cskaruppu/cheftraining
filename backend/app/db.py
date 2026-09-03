@@ -132,6 +132,7 @@ agents_t = Table(
     Column("driver_version", String(40)),
     Column("cuda_version", String(20)),
     Column("agent_version", String(20)),
+    Column("token", String(80), nullable=True),  # per-cluster enrollment token
 )
 
 work_t = Table(
@@ -269,6 +270,7 @@ _AGENT_MIGRATIONS = {
     "driver_version": "ALTER TABLE agent_clusters ADD COLUMN driver_version VARCHAR(40)",
     "cuda_version": "ALTER TABLE agent_clusters ADD COLUMN cuda_version VARCHAR(20)",
     "agent_version": "ALTER TABLE agent_clusters ADD COLUMN agent_version VARCHAR(20)",
+    "token": "ALTER TABLE agent_clusters ADD COLUMN token VARCHAR(80)",
 }
 for _name, _ddl in _AGENT_MIGRATIONS.items():
     if _name not in _agent_cols:

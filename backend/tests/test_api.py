@@ -969,3 +969,80 @@ def test_auto_sweep_sleeps_idle_on_demand():
                if x["id"] == dep["id"])
     assert pub["status"] == "sleeping"
     client.delete(f"/api/deployments/{dep['id']}")
+
+
+def test_prometheus_metrics_exposition():
+    # a metered gateway call, then scrape
+    r = client.post("/v1/chat/completions", json={
+        "model": "phi-4", "messages": [{"role": "user", "content": "metrics"}]})
+    assert r.status_code == 200
+    m = client.get("/metrics")
+    assert m.status_code == 200
+    assert m.headers["content-type"].startswith("text/plain")
+    body = m.text
+    # request counter, labelled by surface so gateway traffic is separable
+    assert "# TYPE modelect_http_requests_total counter" in body
+    assert 'surface="gateway"' in body and 'surface="portal"' in body
+    assert 'status="200"' in body
+    # business counters: tokens both directions + spend
+    assert 'modelect_gateway_tokens_total{direction="in"}' in body
+    assert 'modelect_gateway_tokens_total{direction="out"}' in body
+    assert "modelect_gateway_cost_usd_total " in body
+    # latency histogram with buckets, sum and count
+    assert "# TYPE modelect_gateway_request_seconds histogram" in body
+    assert 'modelect_gateway_request_seconds_bucket{le="+Inf"}' in body
+    assert "modelect_gateway_request_seconds_sum " in body
+    assert "modelect_gateway_request_seconds_count " in body
+    # guardrail actions are countable for alerting
+    from app import tokenomics
+    tokenomics.log_enforcement("intern-sandbox", "BLOCK", "metrics probe")
+    assert 'modelect_enforcement_total{action="BLOCK"}' in client.get("/metrics").text
+    # /metrics is open (scrapers hold no session) but exposes no secrets
+    assert TestClient(app).get("/metrics").status_code == 200
+    assert "api_key" not in body and "ma-" not in body
+
+
+def test_per_cluster_enrollment_tokens():
+    globl = client.get("/api/agents/token").json()["token"]
+    minted = client.post("/api/agents/clusters/lab-tok/token").json()
+    tok = minted["token"]
+    assert minted["cluster_id"] == "lab-tok" and tok != globl
+
+    # minting alone must not conjure a fleet card — only a heartbeat does
+    assert not any(c["id"] == "lab-tok"
+                   for c in client.get("/api/clusters").json()["clusters"])
+
+    report = {"cluster_id": "lab-tok", "name": "Lab Tok",
+              "platform": "kubernetes", "version": "v1.30", "nodes": 1,
+              "gpu_class": "gpu-ready", "operator_detected": True,
+              "agent_version": "2.0",
+              "gpus": [{"family": "L4", "type": "NVIDIA L4 24GB", "count": 2}]}
+
+    # the cluster token works for its own cluster...
+    assert client.post("/api/agent/v1/report", json=report,
+                       headers={"X-Agent-Token": tok}).status_code == 200
+    # ...and nowhere else: blast radius is one cluster, not the fleet
+    other = dict(report, cluster_id="lab-x")
+    assert client.post("/api/agent/v1/report", json=other,
+                       headers={"X-Agent-Token": tok}).status_code == 401
+    # the global bootstrap token still enrolls (rolling migration)
+    assert client.post("/api/agent/v1/report", json=report,
+                       headers={"X-Agent-Token": globl}).status_code == 200
+    # a report never overwrites the stored token
+    assert client.get("/api/agent/v1/work?cluster_id=lab-tok",
+                      headers={"X-Agent-Token": tok}).status_code == 200
+
+    # re-minting is rotation: the old token dies immediately
+    rotated = client.post("/api/agents/clusters/lab-tok/token").json()["token"]
+    assert rotated != tok
+    assert client.post("/api/agent/v1/report", json=report,
+                       headers={"X-Agent-Token": tok}).status_code == 401
+    assert client.post("/api/agent/v1/report", json=report,
+                       headers={"X-Agent-Token": rotated}).status_code == 200
+    # rotations are receipted for the audit trail
+    led = client.get("/api/ledger?kind=placement").json()["entries"]
+    assert any("enrollment token rotated" in e["summary"] and "lab-tok" in e["summary"]
+               for e in led)
+    # minting is an admin action
+    u = _user_client("doc-pipeline")
+    assert u.post("/api/agents/clusters/lab-tok/token").status_code == 403

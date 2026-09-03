@@ -87,3 +87,21 @@ database:
 
 # Optional: passed to the API as DEMO_SEED ("0" = real traffic only)
 demoSeed: ""
+
+# Namespace-level segmentation. Off by default because a wrong policy
+# looks exactly like an outage; turn it on once the topology is settled.
+# When enabled: default-deny ingress, then ui:8080 and gateway:8000 open
+# to the router, api:8000 only from ui/gateway pods, and (if you point
+# postgresSelector at an in-namespace DB) 5432 only from api/gateway.
+networkPolicies:
+  enabled: false
+  # Set when the Route/Ingress targets orchestrator-api directly instead
+  # of going through the UI pod's /api proxy.
+  allowApiFromIngress: false
+  # Labels of an in-namespace PostgreSQL pod, e.g. {name: postgresql}.
+  # Empty = external/managed database, no policy written.
+  postgresSelector: {}
+  postgresPort: 5432
+  # Extra `from:` selectors appended to the API policy (e.g. your own
+  # scrapers or a Prometheus namespaceSelector).
+  extraApiIngressSelectors: []

@@ -1,0 +1,17 @@
+{{- if and .Values.components.gateway (gt (int .Values.gateway.replicas) 1) }}
+# The gateway is the request path: node drains and cluster upgrades must
+# never take every replica at once. Only meaningful with replicas > 1 —
+# a minAvailable:1 budget on a single-replica Deployment blocks drains.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orchestrator-gateway
+  labels:
+    app: orchestrator-gateway
+    {{- include "modelect.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: orchestrator-gateway
+{{- end }}

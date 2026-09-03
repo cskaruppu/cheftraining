@@ -40,7 +40,42 @@ def enroll_token() -> str:
 
 
 def token_valid(candidate: str | None) -> bool:
+    """Global bootstrap token — used by the connect wizard and as the
+    fallback while a fleet migrates to per-cluster tokens."""
     return bool(candidate) and hmac.compare_digest(candidate, enroll_token())
+
+
+def mint_cluster_token(cluster_id: str) -> str:
+    """Per-cluster enrollment token (minting again = rotation: the old
+    token stops working immediately). A stolen token then compromises
+    one cluster, not the fleet."""
+    token = f"ma-{secrets.token_hex(16)}"
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(agents_t.c.cluster_id)
+            .where(agents_t.c.cluster_id == cluster_id)).first()
+        if existing:
+            conn.execute(update(agents_t)
+                         .where(agents_t.c.cluster_id == cluster_id)
+                         .values(token=token))
+        else:  # pre-enrollment skeleton; hidden until the first heartbeat
+            conn.execute(insert(agents_t).values(
+                cluster_id=cluster_id, name=cluster_id, platform="",
+                version="", region="", residency="", cost_factor=1.0,
+                gpus_json="[]", nodes=0, last_seen=0, token=token))
+    return token
+
+
+def token_valid_for(candidate: str | None, cluster_id: str | None) -> bool:
+    """Per-cluster token for that cluster, or the global bootstrap."""
+    if token_valid(candidate):
+        return True
+    if not candidate or not cluster_id:
+        return False
+    with engine.connect() as conn:
+        row = conn.execute(select(agents_t.c.token)
+                           .where(agents_t.c.cluster_id == cluster_id)).first()
+    return bool(row and row.token and hmac.compare_digest(candidate, row.token))
 
 
 def upsert_report(report: dict) -> dict:
@@ -69,6 +104,7 @@ def upsert_report(report: dict) -> dict:
             select(agents_t.c.cluster_id)
             .where(agents_t.c.cluster_id == cluster_id)).first()
         if existing:
+            # never clobber the per-cluster token from a report payload
             conn.execute(update(agents_t)
                          .where(agents_t.c.cluster_id == cluster_id).values(**row))
         else:
@@ -81,6 +117,8 @@ def real_clusters() -> list[dict]:
         rows = [dict(r) for r in conn.execute(select(agents_t)).mappings()]
     out = []
     for r in rows:
+        if not r["last_seen"]:
+            continue  # token minted, agent not yet enrolled — no card yet
         age = time.time() - (r["last_seen"] or 0)
         out.append({
             "id": r["cluster_id"], "name": r["name"],
