@@ -41,6 +41,7 @@ const DEP_STATUS_CHIP: Record<string, string> = {
   running: "border-good/40 text-good",
   ready: "border-good/40 text-good",
   error: "border-crit/50 text-crit",
+  sleeping: "border-warn/50 text-warn",
 };
 
 function ClassBadge({ c }: { c: Cluster }) {

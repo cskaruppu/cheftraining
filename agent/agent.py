@@ -177,10 +177,12 @@ def _kube_write(method: str, path: str, body: dict | None = None) -> int:
         token = f.read().strip()
     ctx = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
     data = json.dumps(body).encode() if body is not None else None
+    content_type = ("application/strategic-merge-patch+json"
+                    if method == "PATCH" else "application/json")
     req = urllib.request.Request(
         KUBE_HOST + path, data=data, method=method,
         headers={"Authorization": f"Bearer {token}",
-                 "Content-Type": "application/json"})
+                 "Content-Type": content_type})
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=20) as resp:
             return resp.status
@@ -218,6 +220,17 @@ def _serving_manifests(order: dict, openshift: bool) -> list[tuple[str, dict]]:
             },
         },
     }
+    # weight cache: a shared PVC (WEIGHT_CACHE_PVC) holding HF downloads,
+    # so a scale-to-zero wake is container-start + load-from-disk instead
+    # of re-pulling tens of GB of weights
+    cache_pvc = os.environ.get("WEIGHT_CACHE_PVC", "")
+    if cache_pvc:
+        pod = dep["spec"]["template"]["spec"]
+        pod["volumes"] = [{"name": "weights",
+                           "persistentVolumeClaim": {"claimName": cache_pvc}}]
+        c = pod["containers"][0]
+        c["volumeMounts"] = [{"name": "weights", "mountPath": "/root/.cache/huggingface"}]
+        c["env"].append({"name": "HF_HOME", "value": "/root/.cache/huggingface"})
     svc = {"apiVersion": "v1", "kind": "Service",
            "metadata": {"name": name, "labels": labels},
            "spec": {"selector": {"app": name},
@@ -273,6 +286,26 @@ def process_work(openshift: bool):
                 _cp_call(f"/api/agent/v1/work/{order['id']}", {"state": "deleted"})
                 print(f"work {order['id']}: deleted {name}", flush=True)
                 continue
+            if order["action"] == "sleep":
+                # scale-to-zero: keep the Deployment object, drop replicas
+                if order["state"] == "pending":
+                    _kube_write("PATCH",
+                                f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}",
+                                {"spec": {"replicas": 0}})
+                    _cp_call(f"/api/agent/v1/work/{order['id']}",
+                             {"state": "sleeping"})
+                    print(f"work {order['id']}: slept {name}", flush=True)
+                continue
+            if order["action"] == "wake":
+                if order["state"] == "pending":
+                    _kube_write("PATCH",
+                                f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}",
+                                {"spec": {"replicas": 1}})
+                    _cp_call(f"/api/agent/v1/work/{order['id']}",
+                             {"state": "starting"})
+                    print(f"work {order['id']}: waking {name}", flush=True)
+                    continue
+                # fall through: poll readiness like a fresh deploy
             if not order["hf_repo"]:
                 _cp_call(f"/api/agent/v1/work/{order['id']}",
                          {"state": "error", "message": "model has no HF repo mapping"})

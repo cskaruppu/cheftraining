@@ -40,6 +40,20 @@ deployments_t = Table(
     Column("cluster_name", String(120)),
     Column("api_key", String(80)),
     Column("created_at", Float),
+    Column("serving_class", String(12)),   # reserved | on-demand
+    Column("asleep", Boolean, default=False),
+)
+
+# GPU thin provisioning ledger: every sleep period of an on-demand
+# deployment (woke_at NULL = still asleep). Sum -> GPU-hours reclaimed.
+sleep_log_t = Table(
+    "sleep_log", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("dep_id", String(16), index=True),
+    Column("cluster_id", String(80)),
+    Column("gpus", Integer),
+    Column("slept_at", Float),
+    Column("woke_at", Float, nullable=True),
 )
 
 events_t = Table(
@@ -235,6 +249,16 @@ _TEAM_MIGRATIONS = {
 }
 for _name, _ddl in _TEAM_MIGRATIONS.items():
     if _name not in _team_cols:
+        with engine.begin() as _conn:
+            _conn.execute(_sa_text(_ddl))
+
+_dep_cols = {c["name"] for c in _sa_inspect(engine).get_columns("deployments")}
+_DEP_MIGRATIONS = {
+    "serving_class": "ALTER TABLE deployments ADD COLUMN serving_class VARCHAR(12)",
+    "asleep": "ALTER TABLE deployments ADD COLUMN asleep BOOLEAN DEFAULT 0",
+}
+for _name, _ddl in _DEP_MIGRATIONS.items():
+    if _name not in _dep_cols:
         with engine.begin() as _conn:
             _conn.execute(_sa_text(_ddl))
 

@@ -133,6 +133,8 @@ spec:
               value: {{ .Values.agent.insecureTls | quote }}
             - name: SERVING_IMAGE
               value: {{ .Values.agent.servingImage | quote }}
+            - name: WEIGHT_CACHE_PVC
+              value: {{ .Values.agent.weightCachePvc | quote }}
             - name: AGENT_NAMESPACE
               value: {{ .Release.Namespace | quote }}
           resources:

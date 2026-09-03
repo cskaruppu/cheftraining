@@ -95,7 +95,10 @@ def fits_preview(cluster: dict) -> dict | None:
 
 
 def create(model_id: str, profile_id: str, name: str,
-           cluster_id: str | None = None, residency: str | None = None) -> dict:
+           cluster_id: str | None = None, residency: str | None = None,
+           serving_class: str | None = None) -> dict:
+    if serving_class not in (None, "reserved", "on-demand"):
+        raise ValueError("serving_class must be 'reserved' or 'on-demand'")
     if cluster_id and cluster_id in clusters.cordoned_ids():
         raise ValueError(f"cluster '{cluster_id}' is cordoned for maintenance "
                          "— uncordon it or let auto-placement choose")
@@ -118,6 +121,12 @@ def create(model_id: str, profile_id: str, name: str,
     if not clusters.allocate(cluster_id, profile["gpus"]):
         raise ValueError(f"cluster '{cluster_id}' lacks free GPUs for this profile")
 
+    # thin provisioning is the norm for small models: SLMs default to
+    # on-demand (scale-to-zero), larger models to reserved
+    if serving_class is None:
+        serving_class = "on-demand" if model.get("size_class") == "slm" \
+            else "reserved"
+
     dep_id = uuid.uuid4().hex[:10]
     row = {
         "id": dep_id,
@@ -129,6 +138,8 @@ def create(model_id: str, profile_id: str, name: str,
         "cluster_name": cluster_name,
         "api_key": f"mk-{secrets.token_hex(16)}",
         "created_at": time.time(),
+        "serving_class": serving_class,
+        "asleep": False,
     }
     with engine.begin() as conn:
         conn.execute(insert(deployments_t).values(**row))
@@ -169,12 +180,17 @@ def _public(row) -> dict:
     status, progress = _status(r["created_at"])
     backend, real_endpoint, message = "simulated", "", ""
     order = work.state_for(r["id"])
-    if order and order["action"] == "deploy":
+    if order and order["action"] in ("deploy", "wake"):
         # agent-executed deployment: real state beats the simulated timeline
         status, progress = _WORK_STATUS.get(order["state"], ("scheduling", 10))
         backend = "agent"
         real_endpoint = order["endpoint"] or ""
         message = order["message"] or ""
+    elif order:
+        backend = "agent"
+    if r.get("asleep"):
+        status, progress = "sleeping", 100
+        message = "scale-to-zero: vGPU returned to the pool — first request wakes it"
     return {
         "id": r["id"], "name": r["name"],
         "model_id": r["model_id"], "model_name": r["model_name"],
@@ -184,6 +200,8 @@ def _public(row) -> dict:
         "status": status, "progress": progress,
         "backend": backend, "real_endpoint": real_endpoint, "message": message,
         "endpoint_path": "/v1/chat/completions",
+        "serving_class": r.get("serving_class") or "reserved",
+        "asleep": bool(r.get("asleep")),
     }
 
 
@@ -200,17 +218,28 @@ def delete(dep_id: str) -> bool:
         if row is None:
             return False
         conn.execute(sa_delete(deployments_t).where(deployments_t.c.id == dep_id))
-    profile = json.loads(row["profile_json"])
-    clusters.release(row["cluster_id"], profile["gpus"])
+        # close any open sleep period so GPU-hours stop accruing
+        from .db import sleep_log_t
+        conn.execute(sleep_log_t.update()
+                     .where(sleep_log_t.c.dep_id == dep_id,
+                            sleep_log_t.c.woke_at.is_(None))
+                     .values(woke_at=time.time()))
+    if not row["asleep"]:  # a sleeping deployment already released its slice
+        profile = json.loads(row["profile_json"])
+        clusters.release(row["cluster_id"], profile["gpus"])
     work.request_delete(dep_id)  # agent tears down the serving pod
     return True
 
 
 def restore_allocations():
-    """Re-derive fleet GPU allocations from persisted deployments (boot)."""
+    """Re-derive fleet GPU allocations from persisted deployments (boot).
+    Sleeping on-demand deployments hold no allocation — that's the point
+    of scale-to-zero — so they are skipped."""
     with engine.connect() as conn:
         rows = conn.execute(select(deployments_t)).mappings().all()
     for r in rows:
+        if r["asleep"]:
+            continue
         profile = json.loads(r["profile_json"])
         clusters.allocate(r["cluster_id"], profile["gpus"])
 

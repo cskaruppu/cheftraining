@@ -29,6 +29,13 @@ DEFAULTS = [
      "description": "How long registry connector results are cached before "
                     "a re-sync.",
      "min_value": 1, "max_value": 48},
+    {"key": "idle_sleep_minutes", "value": 60,
+     "label": "Idle sleep threshold (minutes)",
+     "description": "On-demand deployments with no traffic for this long "
+                    "are auto-slept: the vLLM pod scales to zero and its "
+                    "vGPU allocation returns to the pool (GPU thin "
+                    "provisioning). First request wakes them.",
+     "min_value": 5, "max_value": 1440},
     {"key": "router_threshold", "value": 0.5,
      "label": "Smart-router complexity threshold",
      "description": "Requests scoring at or above this complexity go to the "

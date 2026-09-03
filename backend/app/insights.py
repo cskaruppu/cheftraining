@@ -94,11 +94,12 @@ def _attention(conn, gov: dict) -> list[dict]:
             "detail": a["detail"][:140],
             "link": "/tokenomics"})
 
-    # idle GPU serving: a running deployment whose model served nothing
-    # for IDLE_AFTER_H hours still holds vGPU slices — reclaimable
+    # idle GPU serving: a RESERVED deployment whose model served nothing
+    # still holds vGPU slices — on-demand ones auto-sleep instead, so
+    # the fix here is a class change, not a nag
     idle_cutoff = _iso_ago(hours=IDLE_AFTER_H)
     for d in deployments.list_all():
-        if d["status"] not in ("running", "ready"):
+        if d["status"] not in ("running", "ready") or d.get("asleep"):
             continue
         served = conn.execute(
             select(func.count()).select_from(events_t)
@@ -108,8 +109,9 @@ def _attention(conn, gov: dict) -> list[dict]:
             items.append({
                 "severity": "info", "kind": "idle",
                 "title": f"'{d['name']}' idle — no traffic in {IDLE_AFTER_H}h",
-                "detail": f"{d['model_name']} on {d['cluster_name']} still holds "
-                          "its vGPU allocation; deleting it frees the capacity",
+                "detail": f"{d['model_name']} on {d['cluster_name']} holds its "
+                          "vGPU allocation — switch it to the on-demand class "
+                          "(auto scale-to-zero) or delete it",
                 "link": "/deploy"})
 
     return sorted(items, key=lambda i: _SEV_RANK[i["severity"]])
@@ -238,11 +240,13 @@ def admin_summary(days: int = 14) -> dict:
         total_budget = sum(t["budget_usd"] for t in gov["teams"] if t["enabled"])
         total_spend = sum(t["spend"] for t in gov["teams"] if t["enabled"])
         runway = round(max(0.0, total_budget - total_spend) / burn, 1) if burn else None
+        from . import alerts, serving
+        serving.auto_sweep()  # throttled scale-to-zero reclaim loop
         attention = _attention(conn, gov)
-        from . import alerts
         alerts.notify(attention)  # webhook on NEW critical items, deduped
         return {
             "attention": attention,
+            "reclaimed": serving.reclaimed(),
             "runway_days": runway,
             "counterfactual": _counterfactual(conn, days),
             "router_health": _router_trend(conn, days),

@@ -25,7 +25,7 @@ import httpx
 
 from . import (agentic, agents, analytics, auth, clusters, config, deployments,
                evals, insights, integration, ledger, migrate, registry, replay,
-               resilience, tokenomics, work)
+               resilience, serving, tokenomics, work)
 from . import router as smart_router
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
@@ -395,7 +395,8 @@ def agent_work_status(order_id: str, req: WorkStatus,
                       x_agent_token: str | None = Header(default=None)):
     if not agents.token_valid(x_agent_token):
         raise HTTPException(401, "invalid or missing agent enrollment token")
-    if req.state not in ("starting", "pulling", "ready", "error", "deleted"):
+    if req.state not in ("starting", "pulling", "ready", "error", "deleted",
+                         "sleeping"):
         raise HTTPException(400, "invalid state")
     if not work.update_state(order_id, req.state, req.endpoint, req.message):
         raise HTTPException(404, "unknown work order")
@@ -425,6 +426,7 @@ class DeploymentRequest(BaseModel):
     name: str = ""
     cluster_id: str | None = None
     residency: str | None = None
+    serving_class: str | None = None  # reserved | on-demand (default by size)
 
 
 @app.get("/api/models/{model_id}/profiles")
@@ -439,7 +441,25 @@ def get_profiles(model_id: str):
 def create_deployment(req: DeploymentRequest):
     try:
         return deployments.create(req.model_id, req.profile_id, req.name,
-                                  req.cluster_id, req.residency)
+                                  req.cluster_id, req.residency,
+                                  serving_class=req.serving_class)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/deployments/{dep_id}/sleep")
+def sleep_deployment(dep_id: str):
+    """Manual scale-to-zero for an on-demand deployment."""
+    try:
+        return serving.sleep(dep_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/deployments/{dep_id}/wake")
+def wake_deployment(dep_id: str):
+    try:
+        return serving.wake(dep_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -875,6 +895,17 @@ async def chat_completions(req: ChatCompletionRequest,
     policy = req.model if is_routed else None
     agent_id = agent["id"] if agent else None
     task_id = task_info["id"] if task_info else None
+
+    # scale-to-zero: first request after sleep wakes the deployment.
+    # Simulated clusters wake instantly; agent clusters warm up and the
+    # caller gets an honest 503 with Retry-After until vLLM is ready.
+    wake_info = serving.ensure_awake(model["id"])
+    if wake_info and wake_info.get("warming"):
+        raise HTTPException(
+            503, f"model '{model['id']}' is waking from scale-to-zero — "
+                 "vLLM is restarting and loading weights; retry shortly",
+            headers={"Retry-After": "30"})
+
     real_endpoint = work.ready_endpoint_for_model(model["id"])
     if real_endpoint and not req.stream:
         try:
@@ -951,7 +982,8 @@ async def chat_completions(req: ChatCompletionRequest,
                    **({"agent": {"id": agent["id"], "name": agent["name"]}}
                       if agent else {}),
                    **({"task": task_info} if task_info else {}),
-                   **({"loopbreak": loop_info} if loop_info else {})}
+                   **({"loopbreak": loop_info} if loop_info else {}),
+                   **({"wake": wake_info} if wake_info else {})}
     _ledger_gateway(model, req.model if is_routed else "direct",
                     team, enforcement, failover_info, router_info,
                     cascade_info, receipt_obj,

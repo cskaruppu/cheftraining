@@ -113,6 +113,9 @@ spec:
             - {name: INSECURE_TLS, value: "0"}
             # vLLM image used for real model serving (Phase B2)
             - {name: SERVING_IMAGE, value: "vllm/vllm-openai:latest"}
+            # optional: name of a PVC to cache model weights across
+            # scale-to-zero wake cycles (create it in this namespace)
+            - {name: WEIGHT_CACHE_PVC, value: ""}
             # gated HF models: oc -n modelect-agent create secret generic hf-token --from-literal=token=hf_...
           resources:
             requests: {cpu: 20m, memory: 32Mi}

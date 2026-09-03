@@ -126,6 +126,8 @@ ADMIN_RULES = [
     ("PUT", "/api/admin/"),
     ("PUT", "/api/clusters/"),
     ("POST", "/api/teams/"),
+    ("POST", "/api/deployments/"),   # sleep/wake lifecycle (create is
+                                     # /api/deployments without the slash)
 ]
 
 

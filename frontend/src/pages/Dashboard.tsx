@@ -50,6 +50,7 @@ interface AdminOps {
   };
   prompt_bloat: { trend: { day: string; avg_tokens_in: number }[]; change_pct: number | null };
   concentration: { provider: string; share_pct: number; providers_used: number; alternatives: number } | null;
+  reclaimed?: { gpu_hours: number; sleeps: number; asleep_now: number };
 }
 
 const SEV_DOT: Record<string, string> = {
@@ -244,6 +245,12 @@ export default function Dashboard() {
             {fleet
               ? `${gpuReady} gpu-ready · ${liveAgents.length} live agent${liveAgents.length === 1 ? "" : "s"}${stale ? ` · ${stale} stale` : ""}`
               : "loading fleet…"}
+            {ops?.reclaimed && ops.reclaimed.gpu_hours > 0 && (
+              <span className="block text-good mt-0.5"
+                title="GPU-hours returned to the pool by scale-to-zero — measured from the sleep log">
+                {ops.reclaimed.gpu_hours}h GPU reclaimed · {ops.reclaimed.asleep_now} sleeping
+              </span>
+            )}
           </div>
         </SignatureCard>
       </div>

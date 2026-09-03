@@ -57,6 +57,8 @@ agent:
   intervalSeconds: "30"
   insecureTls: "0"         # "1" for lab routes with self-signed certs
   servingImage: vllm/vllm-openai:latest
+  weightCachePvc: ""       # optional PVC caching HF weights across
+                           # scale-to-zero wake cycles
   resources:
     requests: {cpu: 20m, memory: 32Mi}
     limits: {cpu: 100m, memory: 64Mi}

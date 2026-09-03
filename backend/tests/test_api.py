@@ -899,3 +899,73 @@ def test_alert_dedupe_is_persistent():
     assert alerts.new_criticals(items) == []
     assert "T1" in kv_get(alerts._SENT_KEY)
     kv_set(alerts._SENT_KEY, None)
+
+
+def test_scale_to_zero_lifecycle():
+    # demofill left dev-mistral asleep ~20h ago -> hours already accrued
+    d0 = client.get("/api/dashboard/admin").json()
+    assert d0["reclaimed"]["gpu_hours"] >= 19
+    assert d0["reclaimed"]["asleep_now"] >= 1
+
+    # SLMs default to on-demand (thin provisioning as the norm)
+    dep = client.post("/api/deployments", json={
+        "model_id": "phi-4", "profile_id": "econ", "name": "od-test"}).json()
+    assert dep["serving_class"] == "on-demand" and dep["asleep"] is False
+
+    # manual sleep frees the slice
+    freed = client.post(f"/api/deployments/{dep['id']}/sleep").json()
+    assert freed["asleep"] is True and freed["gpus_freed"] >= 1
+    pub = next(x for x in client.get("/api/deployments").json()["deployments"]
+               if x["id"] == dep["id"])
+    assert pub["status"] == "sleeping" and pub["asleep"] is True
+    led = client.get("/api/ledger?kind=placement").json()
+    assert any("scale-to-zero" in e["summary"] for e in led["entries"])
+
+    # first gateway request wakes it (simulated cluster: instantly),
+    # with the wake receipted
+    r = client.post("/v1/chat/completions", json={
+        "model": "phi-4",
+        "messages": [{"role": "user", "content": "hi"}]}).json()
+    wake = r["modelect"]["receipt"]["wake"]
+    assert dep["id"] in wake["woke"] and wake["warming"] is False
+    pub = next(x for x in client.get("/api/deployments").json()["deployments"]
+               if x["id"] == dep["id"])
+    assert pub["asleep"] is False
+    led = client.get("/api/ledger?kind=placement").json()
+    assert any("wake:" in e["summary"] for e in led["entries"])
+
+    # reserved deployments refuse to sleep — that's the class contract
+    dep2 = client.post("/api/deployments", json={
+        "model_id": "llama-4-scout", "profile_id": "balanced",
+        "name": "res-test"}).json()
+    assert dep2["serving_class"] == "reserved"
+    r = client.post(f"/api/deployments/{dep2['id']}/sleep")
+    assert r.status_code == 400 and "on-demand" in r.json()["detail"]
+
+    # lifecycle is admin-only
+    u = _user_client("doc-pipeline")
+    assert u.post(f"/api/deployments/{dep['id']}/sleep").status_code == 403
+
+    client.delete(f"/api/deployments/{dep['id']}")
+    client.delete(f"/api/deployments/{dep2['id']}")
+
+
+def test_auto_sweep_sleeps_idle_on_demand():
+    from app import serving
+    from app.db import deployments_t, engine as _e
+    dep = client.post("/api/deployments", json={
+        "model_id": "mistral-small-3.2", "profile_id": "econ",
+        "name": "sweep-test", "serving_class": "on-demand"}).json()
+    # backdate creation past the idle threshold; the model itself has no
+    # recent traffic, so the sweep should reclaim it
+    with _e.begin() as conn:
+        conn.execute(deployments_t.update()
+                     .where(deployments_t.c.id == dep["id"])
+                     .values(created_at=__import__("time").time() - 7200))
+    serving._last_sweep["at"] = 0  # bypass the 60s throttle in tests
+    slept = serving.auto_sweep()
+    assert dep["id"] in slept
+    pub = next(x for x in client.get("/api/deployments").json()["deployments"]
+               if x["id"] == dep["id"])
+    assert pub["status"] == "sleeping"
+    client.delete(f"/api/deployments/{dep['id']}")

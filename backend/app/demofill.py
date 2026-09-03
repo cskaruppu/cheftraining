@@ -126,12 +126,14 @@ def seed():
     with engine.connect() as conn:
         have = conn.execute(select(func.count()).select_from(deployments_t)).scalar()
     if not have:
-        for mid, profile, name, cluster in [
-                ("phi-4", "balanced", "support-slm", "onprem-dc1"),
-                ("llama-4-maverick", "balanced", "legal-70b", "cloud-burst"),
-                ("mistral-small-3.2", "balanced", "dev-mistral", "onprem-dc1")]:
+        for mid, profile, name, cluster, cls in [
+                ("phi-4", "balanced", "support-slm", "onprem-dc1", "reserved"),
+                ("llama-4-maverick", "balanced", "legal-70b", "cloud-burst", "reserved"),
+                ("mistral-small-3.2", "balanced", "dev-mistral", "onprem-dc1", "on-demand")]:
             try:
-                made.append(deployments.create(mid, profile, name, cluster_id=cluster))
+                made.append(deployments.create(mid, profile, name,
+                                               cluster_id=cluster,
+                                               serving_class=cls))
             except ValueError:
                 pass  # capacity may differ on older databases — skip honestly
         if made:
@@ -140,6 +142,17 @@ def seed():
                     conn.execute(deployments_t.update()
                                  .where(deployments_t.c.id == d["id"])
                                  .values(created_at=time.time() - 7200 - i * 3600))
+            # dev-mistral demonstrates scale-to-zero: asleep for ~20h,
+            # its vGPU back in the pool, GPU-hours accruing live
+            from . import serving
+            from .db import sleep_log_t
+            dev = next((d for d in made if d["name"] == "dev-mistral"), None)
+            if dev:
+                serving.sleep(dev["id"], reason="auto — idle > 60 min")
+                with engine.begin() as conn:
+                    conn.execute(sleep_log_t.update()
+                                 .where(sleep_log_t.c.dep_id == dev["id"])
+                                 .values(slept_at=time.time() - 20 * 3600))
     # traffic for two of them so only 'dev-mistral' is a deliberate
     # idle-reclamation example in the attention queue
     for mid in ("phi-4", "llama-4-maverick"):

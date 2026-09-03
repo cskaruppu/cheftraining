@@ -28,6 +28,8 @@ interface Deployment {
   real_endpoint: string;
   message: string;
   endpoint_path: string;
+  serving_class: "reserved" | "on-demand";
+  asleep: boolean;
 }
 
 interface Placement {
@@ -63,6 +65,7 @@ export default function Deploy() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState("");
   const [cluster, setCluster] = useState("auto");
+  const [servingClass, setServingClass] = useState<string | null>(null);
   const [clusterList, setClusterList] = useState<{ id: string; name: string }[]>([]);
   const [placement, setPlacement] = useState<Placement | null>(null);
   const [err, setErr] = useState("");
@@ -126,6 +129,7 @@ export default function Deploy() {
         body: JSON.stringify({
           model_id: modelId, profile_id: profileId, name,
           cluster_id: cluster === "auto" ? null : cluster,
+          serving_class: servingClass,
         }),
       });
       if (!r.ok) {
@@ -141,6 +145,12 @@ export default function Deploy() {
 
   const remove = async (id: string) => {
     await fetch(`/api/deployments/${id}`, { method: "DELETE" });
+    setDeployments(await fetchDeployments());
+  };
+
+  const lifecycle = async (id: string, action: "sleep" | "wake") => {
+    const r = await fetch(`/api/deployments/${id}/${action}`, { method: "POST" });
+    if (!r.ok) setErr((await r.json()).detail ?? `${action} failed`);
     setDeployments(await fetchDeployments());
   };
 
@@ -208,6 +218,26 @@ export default function Deploy() {
               </div>
             </button>
           ))}
+        </div>
+
+        <div className="mb-4">
+          <label className="text-xs text-muted block mb-1.5">
+            Serving class
+            <span className="text-muted/70"> — thin provisioning: on-demand sleeps when idle and frees its vGPU</span>
+          </label>
+          <div className="flex rounded-lg border border-edge overflow-hidden w-fit">
+            {([
+              [null, "auto (SLMs → on-demand)"],
+              ["reserved", "reserved — always-on, SLO latency"],
+              ["on-demand", "on-demand — scale-to-zero"],
+            ] as [string | null, string][]).map(([v, label]) => (
+              <button key={label} onClick={() => setServingClass(v)}
+                className={`px-3 py-1.5 text-[11px] transition-colors ${
+                  v === servingClass ? "bg-raised text-ink" : "text-muted hover:text-ink2"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="grid md:grid-cols-2 gap-4 mb-4">
@@ -286,10 +316,27 @@ export default function Deploy() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {ready ? (
+                  <span className={`chip !text-[10px] ${d.serving_class === "on-demand" ? "border-s3/50 text-s3" : "border-s1/40 text-s1"}`}
+                    title={d.serving_class === "on-demand"
+                      ? "thin-provisioned: sleeps when idle, vGPU returns to the pool, first request wakes it"
+                      : "always-on slice for SLO latency"}>
+                    {d.serving_class}
+                  </span>
+                  {d.asleep ? (
+                    <span className="chip border-warn/50 text-warn"
+                      title="scale-to-zero: vGPU freed — first request (or Wake) restarts it">
+                      ◐ sleeping
+                    </span>
+                  ) : ready ? (
                     <span className="chip border-good/50 text-good">● running</span>
                   ) : (
                     <span className="chip border-warn/50 text-warn">provisioning {d.progress}%</span>
+                  )}
+                  {d.serving_class === "on-demand" && (
+                    <button className="btn-ghost !py-1 !px-3 !text-xs"
+                      onClick={() => lifecycle(d.id, d.asleep ? "wake" : "sleep")}>
+                      {d.asleep ? "Wake" : "Sleep"}
+                    </button>
                   )}
                   <button className="btn-ghost !py-1 !px-3 !text-xs" onClick={() => remove(d.id)}>
                     Delete

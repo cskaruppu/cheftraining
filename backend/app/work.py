@@ -34,6 +34,19 @@ def request_delete(dep_id: str):
                      .values(action="delete", state="pending", updated=time.time()))
 
 
+def request_action(dep_id: str, action: str):
+    """Scale-to-zero lifecycle: 'sleep' (replicas -> 0, slice freed) or
+    'wake' (replicas -> 1, warms up). Mutates the deployment's order row
+    like request_delete does."""
+    assert action in ("sleep", "wake")
+    with engine.begin() as conn:
+        row = conn.execute(select(work_t).where(work_t.c.id == dep_id)).mappings().first()
+        if row is None:
+            return
+        conn.execute(update(work_t).where(work_t.c.id == dep_id)
+                     .values(action=action, state="pending", updated=time.time()))
+
+
 def orders_for(cluster_id: str) -> list[dict]:
     with engine.connect() as conn:
         rows = conn.execute(select(work_t)
@@ -54,6 +67,10 @@ def update_state(order_id: str, state: str, endpoint: str = "",
         values = {"state": state, "updated": time.time(), "message": message[:300]}
         if endpoint:
             values["endpoint"] = endpoint[:300]
+        # a completed wake is a serving deployment again: flip the action
+        # back so ready_endpoint_for_model() serves it
+        if row["action"] == "wake" and state == "ready":
+            values["action"] = "deploy"
         conn.execute(update(work_t).where(work_t.c.id == order_id).values(**values))
     return True
 
