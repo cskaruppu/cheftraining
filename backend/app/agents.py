@@ -21,6 +21,11 @@ from .db import DATA_DIR, agents_t, engine
 
 STALE_AFTER = 90  # seconds without a heartbeat -> "stale"
 
+# Contract version the control plane ships; agents report theirs and
+# older ones are flagged in the attention queue (rolling upgrades:
+# the /api/agent/v1/* paths stay stable within a major version).
+LATEST_AGENT_VERSION = "2.0"
+
 
 def enroll_token() -> str:
     path = os.path.join(DATA_DIR, "agent-token.txt")
@@ -57,6 +62,7 @@ def upsert_report(report: dict) -> dict:
                                              bool(report.get("gpus")))),
         "driver_version": (report.get("driver_version") or "")[:40],
         "cuda_version": (report.get("cuda_version") or "")[:20],
+        "agent_version": (report.get("agent_version") or "")[:20],
     }
     with engine.begin() as conn:
         existing = conn.execute(
@@ -90,6 +96,7 @@ def real_clusters() -> list[dict]:
             "operator_detected": bool(r["operator_detected"]),
             "driver_version": r["driver_version"] or "",
             "cuda_version": r["cuda_version"] or "",
+            "agent_version": r["agent_version"] or "",
             "source": "agent",
         })
     return out

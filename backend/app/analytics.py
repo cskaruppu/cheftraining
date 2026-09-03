@@ -72,7 +72,8 @@ def demo_seed_enabled() -> bool:
 
 
 def seed():
-    if not demo_seed_enabled():
+    from .db import IS_GATEWAY_ROLE
+    if IS_GATEWAY_ROLE or not demo_seed_enabled():
         return
     with engine.connect() as conn:
         count = conn.execute(select(func.count()).select_from(events_t)).scalar()

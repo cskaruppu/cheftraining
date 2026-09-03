@@ -29,6 +29,7 @@ interface Cluster {
   operator_detected?: boolean;
   driver_version?: string;
   cuda_version?: string;
+  agent_version?: string;
   cordoned?: boolean;
   util_history?: number[];
   carbon_kg_day?: number;
@@ -355,6 +356,11 @@ export default function Clusters() {
                     {c.driver_version && (
                       <span title="NVIDIA driver / CUDA, from GPU Operator node labels">
                         {" "}· drv {c.driver_version}{c.cuda_version ? ` · CUDA ${c.cuda_version}` : ""}
+                      </span>
+                    )}
+                    {c.agent_version && (
+                      <span title="Modelect agent version — outdated agents are flagged in the attention queue">
+                        {" "}· agent v{c.agent_version}
                       </span>
                     )}
                   </div>

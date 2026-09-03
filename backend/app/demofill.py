@@ -59,7 +59,8 @@ def _ensure_agents():
 
 
 def seed():
-    if not analytics.demo_seed_enabled():
+    from .db import IS_GATEWAY_ROLE
+    if IS_GATEWAY_ROLE or not analytics.demo_seed_enabled():
         return
     _ensure_agents()
     if resilience.kv_get(_FLAG):

@@ -6,6 +6,11 @@ DSN for production/multi-replica deployments. Same schema either way.
 """
 import os
 
+# Split-topology role: "gateway" pods serve only /v1 and never run the
+# seeders (the control pod owns seeding, avoiding boot races between
+# replicas). Default "combined" behaves exactly as before.
+IS_GATEWAY_ROLE = os.environ.get("MODELECT_ROLE", "").lower() == "gateway"
+
 from sqlalchemy import (Boolean, Column, Float, Integer, MetaData, String, Text,
                         Table, create_engine)
 
@@ -112,6 +117,7 @@ agents_t = Table(
     Column("operator_detected", Boolean),
     Column("driver_version", String(40)),
     Column("cuda_version", String(20)),
+    Column("agent_version", String(20)),
 )
 
 work_t = Table(
@@ -238,6 +244,7 @@ _AGENT_MIGRATIONS = {
     "operator_detected": "ALTER TABLE agent_clusters ADD COLUMN operator_detected BOOLEAN",
     "driver_version": "ALTER TABLE agent_clusters ADD COLUMN driver_version VARCHAR(40)",
     "cuda_version": "ALTER TABLE agent_clusters ADD COLUMN cuda_version VARCHAR(20)",
+    "agent_version": "ALTER TABLE agent_clusters ADD COLUMN agent_version VARCHAR(20)",
 }
 for _name, _ddl in _AGENT_MIGRATIONS.items():
     if _name not in _agent_cols:

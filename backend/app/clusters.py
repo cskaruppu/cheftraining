@@ -189,6 +189,7 @@ def snapshot() -> list[dict]:
             "operator_detected": c["operator_detected"],
             "driver_version": c.get("driver_version", ""),
             "cuda_version": c.get("cuda_version", ""),
+            "agent_version": c.get("agent_version", ""),
             "source": "agent",
         })
     return [_enrich(c) for c in out]

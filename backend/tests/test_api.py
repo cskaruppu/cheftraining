@@ -860,3 +860,42 @@ def test_loop_breaker_and_delegation_depth():
                     json={"model": "phi-4",
                           "messages": [{"role": "user", "content": "ok"}]})
     assert r.status_code == 200
+
+
+def test_agent_contract_v1_and_version_flagging():
+    token = client.get("/api/agents/token").json()["token"]
+    hdr = {"X-Agent-Token": token}
+    report = {
+        "cluster_id": "lab-x", "name": "Lab X", "platform": "kubernetes",
+        "version": "v1.30", "nodes": 2, "gpu_class": "gpu-ready",
+        "operator_detected": True, "agent_version": "1.0",
+        "gpus": [{"family": "L4", "type": "NVIDIA L4 24GB", "count": 4}],
+    }
+    # v1 path is the stable contract; the legacy path still works
+    assert client.post("/api/agent/v1/report", json=report, headers=hdr).status_code == 200
+    assert client.post("/api/agent/report", json=report, headers=hdr).status_code == 200
+    snap = client.get("/api/clusters").json()["clusters"]
+    lab = next(c for c in snap if c["id"] == "lab-x")
+    assert lab["agent_version"] == "1.0"
+    # outdated agent -> attention item with the upgrade target
+    d = client.get("/api/dashboard/admin").json()
+    assert any("outdated" in i["title"] and "Lab X" in i["title"]
+               for i in d["attention"])
+    # v1 work polling honors the same token auth
+    assert client.get("/api/agent/v1/work?cluster_id=lab-x",
+                      headers=hdr).status_code == 200
+    assert client.get("/api/agent/v1/work?cluster_id=lab-x").status_code == 401
+
+
+def test_alert_dedupe_is_persistent():
+    from app import alerts
+    from app.resilience import kv_get, kv_set
+    kv_set(alerts._SENT_KEY, None)  # clean slate
+    items = [{"severity": "crit", "kind": "t", "title": "T1", "detail": "d",
+              "link": "/"}]
+    assert [i["title"] for i in alerts.new_criticals(items)] == ["T1"]
+    alerts._mark(["T1"])
+    # dedupe survives a fresh read from the database (i.e. any replica)
+    assert alerts.new_criticals(items) == []
+    assert "T1" in kv_get(alerts._SENT_KEY)
+    kv_set(alerts._SENT_KEY, None)

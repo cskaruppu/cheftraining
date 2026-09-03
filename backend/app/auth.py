@@ -51,6 +51,9 @@ def _hash(password: str, salt: str) -> str:
 
 
 def seed():
+    from .db import IS_GATEWAY_ROLE
+    if IS_GATEWAY_ROLE:
+        return
     with engine.begin() as conn:
         existing = {r.username for r in conn.execute(select(users_t.c.username))}
         rows = []

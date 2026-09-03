@@ -26,6 +26,11 @@
 #    DRY_RUN=1       print the manifests instead of applying them
 #    WITH_POSTGRES=1 deploy a PostgreSQL instance and point the API at it
 #                    (default: durable SQLite on a 1Gi PVC)
+#    TOPOLOGY=split  production shape: a dedicated, horizontally-scaled
+#                    gateway deployment (MODELECT_ROLE=gateway, /v1 only,
+#                    2 replicas, own route) beside the control API.
+#                    Requires WITH_POSTGRES=1 (SQLite on RWO cannot be
+#                    shared across pods). Default: combined (one pod).
 #    REPO_URL        source repo to clone when not run from a checkout
 #                    (default: https://github.com/cskaruppu/cheftraining.git)
 #    REPO_BRANCH     branch to check out
@@ -231,6 +236,9 @@ if [[ "$ACTION" == "undeploy" ]]; then
   INGRESS_HOST="${INGRESS_HOST:-placeholder.local}"
   log "Removing Modelect from namespace $NAMESPACE ($PLATFORM)"
   manifests | "$CLI" -n "$NAMESPACE" delete --ignore-not-found -f -
+  "$CLI" -n "$NAMESPACE" delete deployment/orchestrator-gateway \
+    service/orchestrator-gateway route/orchestrator-gateway \
+    --ignore-not-found 2>/dev/null || true
   "$CLI" -n "$NAMESPACE" delete secret quay-pull --ignore-not-found
   log "Done."
   exit 0
@@ -298,6 +306,12 @@ fi
 
 detect_cli
 log "Platform: $PLATFORM (cli: $CLI) — namespace: $NAMESPACE — tag: $TAG"
+
+if [[ "${TOPOLOGY:-combined}" == "split" && "${WITH_POSTGRES:-0}" != "1" ]]; then
+  echo "ERROR: TOPOLOGY=split requires WITH_POSTGRES=1 — SQLite on an RWO" >&2
+  echo "       PVC cannot be shared between the gateway and control pods." >&2
+  exit 1
+fi
 
 if [[ "$PLATFORM" == "kubernetes" && -z "${INGRESS_HOST:-}" ]]; then
   echo "ERROR: set INGRESS_HOST=<hostname> for kubernetes deployments" >&2
@@ -399,16 +413,87 @@ if [[ "$API_EXISTS" == "1" || "$UI_EXISTS" == "1" ]]; then
   [[ "$UI_EXISTS" == "1" ]] && "$CLI" -n "$NAMESPACE" rollout restart deployment/orchestrator-ui
 fi
 
+# ---- split topology: dedicated horizontally-scaled gateway ----------
+if [[ "${TOPOLOGY:-combined}" == "split" ]]; then
+  log "Deploying dedicated gateway (MODELECT_ROLE=gateway, 2 replicas)"
+  cat <<EOF | "$CLI" -n "$NAMESPACE" apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-gateway
+  labels: {app: orchestrator-gateway, app.kubernetes.io/part-of: modelect}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: orchestrator-gateway}
+  template:
+    metadata:
+      labels: {app: orchestrator-gateway, app.kubernetes.io/part-of: modelect}
+    spec:
+      ${PULL_SECRET_LINE}
+      containers:
+        - name: gateway
+          image: ${API_IMAGE}
+          imagePullPolicy: Always
+          ports: [{containerPort: 8000}]
+          env:
+            - {name: MODELECT_ROLE, value: "gateway"}
+            - {name: DATABASE_URL, valueFrom: {secretKeyRef: {name: modelect-db, key: database-url}}}
+$( [[ -n "${DEMO_SEED:-}" ]] && printf '            - {name: DEMO_SEED, value: "%s"}\n' "$DEMO_SEED" )
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-gateway
+  labels: {app: orchestrator-gateway, app.kubernetes.io/part-of: modelect}
+spec:
+  selector: {app: orchestrator-gateway}
+  ports: [{port: 8000, targetPort: 8000}]
+EOF
+  if [[ "$PLATFORM" == "openshift" ]]; then
+    cat <<EOF | "$CLI" -n "$NAMESPACE" apply -f -
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: orchestrator-gateway
+  labels: {app: orchestrator-gateway, app.kubernetes.io/part-of: modelect}
+spec:
+  to: {kind: Service, name: orchestrator-gateway}
+  port: {targetPort: 8000}
+  tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
+EOF
+  fi
+  "$CLI" -n "$NAMESPACE" rollout restart deployment/orchestrator-gateway >/dev/null 2>&1 || true
+fi
+
 log "Waiting for rollouts"
 "$CLI" -n "$NAMESPACE" rollout status deployment/orchestrator-api --timeout=300s
 "$CLI" -n "$NAMESPACE" rollout status deployment/orchestrator-ui --timeout=300s
+if [[ "${TOPOLOGY:-combined}" == "split" ]]; then
+  "$CLI" -n "$NAMESPACE" rollout status deployment/orchestrator-gateway --timeout=300s
+fi
 
 echo
 if [[ "$PLATFORM" == "openshift" ]]; then
   HOST="$("$CLI" -n "$NAMESPACE" get route orchestrator-ui -o jsonpath='{.spec.host}')"
   echo "──────────────────────────────────────────────────────"
   echo "  Modelect is up:  https://$HOST"
-  echo "  Gateway:         https://$HOST/v1/chat/completions"
+  if [[ "${TOPOLOGY:-combined}" == "split" ]]; then
+    GW="$("$CLI" -n "$NAMESPACE" get route orchestrator-gateway -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+    echo "  Gateway (dedicated, 2 replicas):"
+    echo "                   https://$GW/v1/chat/completions"
+  else
+    echo "  Gateway:         https://$HOST/v1/chat/completions"
+  fi
   echo "──────────────────────────────────────────────────────"
 else
   echo "──────────────────────────────────────────────────────"

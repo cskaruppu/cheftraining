@@ -39,6 +39,9 @@ DEFAULTS = [
 
 
 def _seed():
+    from .db import IS_GATEWAY_ROLE
+    if IS_GATEWAY_ROLE:
+        return
     with engine.begin() as conn:
         existing = {r.key for r in conn.execute(select(config_t.c.key))}
         for d in DEFAULTS:

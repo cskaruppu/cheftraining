@@ -99,7 +99,14 @@ WITH_POSTGRES=1 ./modelect-deploy.sh <your-quay-user>
 
 # Pin a release tag instead of the rolling 'latest' (optional):
 ./modelect-deploy.sh <your-quay-user> v0.2.0
+
+# Production shape: dedicated, horizontally-scaled gateway (2 replicas,
+# /v1 only, own route) beside the control API — requires PostgreSQL:
+TOPOLOGY=split WITH_POSTGRES=1 ./modelect-deploy.sh <your-quay-user>
 ```
+
+Topology smoke tests (each role boots and serves exactly its surface,
+plus a clean `DEMO_SEED=0` empty boot): `./scripts/smoke-roles.sh`.
 
 The tag defaults to `latest` and **re-running the script is a full
 upgrade with the same tag** — containers use `imagePullPolicy: Always`

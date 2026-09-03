@@ -53,6 +53,7 @@ def _attention(conn, gov: dict) -> list[dict]:
                 "detail": f"{d['status'].replace('_', ' ')} on {d['cluster_name']}",
                 "link": "/deploy"})
 
+    from .agents import LATEST_AGENT_VERSION
     for c in clusters.snapshot():
         if c.get("source") != "simulated" and c.get("agent_status") != "connected":
             items.append({
@@ -60,6 +61,15 @@ def _attention(conn, gov: dict) -> list[dict]:
                 "title": f"Agent on '{c['name']}' has gone stale",
                 "detail": "no heartbeat — deployments there are unreachable "
                           "until it reconnects",
+                "link": "/clusters"})
+        elif c.get("source") != "simulated" and c.get("agent_version") \
+                and c["agent_version"] != LATEST_AGENT_VERSION:
+            items.append({
+                "severity": "info", "kind": "fleet",
+                "title": f"Agent on '{c['name']}' is outdated "
+                         f"(v{c['agent_version']} → v{LATEST_AGENT_VERSION})",
+                "detail": "re-apply the agent manifest to upgrade — "
+                          "imagePullPolicy Always picks up the new image",
                 "link": "/clusters"})
 
     for t in gov["teams"]:

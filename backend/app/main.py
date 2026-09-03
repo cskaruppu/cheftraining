@@ -7,6 +7,7 @@ hot path moves to the Go data plane; the API contracts stay the same.
 """
 import asyncio
 import json
+import os
 import random
 import time
 import uuid
@@ -32,6 +33,11 @@ from .recommender import recommend, routing_receipt, similar_models
 
 app = FastAPI(title="Modelect — Multi-LLM Orchestrator", version="0.2.0-demo")
 
+# Split-topology role (combined | gateway | control): gateway pods serve
+# only /healthz + /v1/* and skip seeding and the portal session gate —
+# the surfaces they'd guard don't exist there.
+_ROLE = os.environ.get("MODELECT_ROLE", "combined").lower()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -52,7 +58,8 @@ _SESSION_EXEMPT = ("/healthz", "/v1/", "/api/auth/", "/api/agent/")
 @app.middleware("http")
 async def _session_gate(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and not any(path.startswith(p) for p in _SESSION_EXEMPT):
+    if _ROLE != "gateway" and path.startswith("/api/") \
+            and not any(path.startswith(p) for p in _SESSION_EXEMPT):
         try:
             request.state.user = auth.authorize(request)
         except HTTPException as e:
@@ -347,8 +354,12 @@ class AgentReport(BaseModel):
     gpu_hardware: bool = False
     driver_version: str = ""
     cuda_version: str = ""
+    agent_version: str = ""
 
 
+# Agent contract v1: /api/agent/v1/* is the stable path for the split
+# topology; the unversioned paths remain as aliases for older agents.
+@app.post("/api/agent/v1/report")
 @app.post("/api/agent/report")
 def agent_report(req: AgentReport,
                  x_agent_token: str | None = Header(default=None)):
@@ -363,6 +374,7 @@ def agents_token(request: Request):
     return {"token": agents.enroll_token()}
 
 
+@app.get("/api/agent/v1/work")
 @app.get("/api/agent/work")
 def agent_work(cluster_id: str,
                x_agent_token: str | None = Header(default=None)):
@@ -377,6 +389,7 @@ class WorkStatus(BaseModel):
     message: str = ""
 
 
+@app.post("/api/agent/v1/work/{order_id}")
 @app.post("/api/agent/work/{order_id}")
 def agent_work_status(order_id: str, req: WorkStatus,
                       x_agent_token: str | None = Header(default=None)):
@@ -996,6 +1009,18 @@ class _SPAStaticFiles(StaticFiles):
         return response
 
 
+# ---- split topology: gateway pods keep only the inference surface ----
+# MODELECT_ROLE=gateway strips everything but /healthz and /v1/* (the
+# gateway's own auth is team/agent API keys, not sessions) and skips the
+# UI mount. "combined" (default) and "control" serve the full surface —
+# control keeps /v1 as a compatibility path while SDKs migrate to the
+# dedicated gateway host.
+if _ROLE == "gateway":
+    app.router.routes = [
+        r for r in app.router.routes
+        if getattr(r, "path", "") == "/healthz"
+        or getattr(r, "path", "").startswith("/v1")]
+
 _static = Path(__file__).resolve().parent.parent / "static"
-if _static.is_dir():
+if _static.is_dir() and _ROLE != "gateway":
     app.mount("/", _SPAStaticFiles(directory=_static, html=True), name="ui")

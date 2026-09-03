@@ -58,6 +58,9 @@ _REAL_MODE_BUDGETS = {"support-bot": 500.0, "doc-pipeline": 400.0,
 
 
 def seed():
+    from .db import IS_GATEWAY_ROLE
+    if IS_GATEWAY_ROLE:
+        return
     """Idempotent: create teams; in demo mode also backfill attribution
     and seed one anomaly burst + its enforcement log entry."""
     analytics.seed()  # base traffic must exist before attribution/backfill

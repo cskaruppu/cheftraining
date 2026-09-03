@@ -24,6 +24,8 @@ import urllib.error
 import urllib.request
 import ssl
 
+AGENT_VERSION = "2.0"  # reported on every heartbeat; the control plane
+                       # flags older agents in the attention queue
 KUBE_HOST = "https://kubernetes.default.svc"
 SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
@@ -131,6 +133,7 @@ def collect() -> dict:
         "residency": os.environ.get("RESIDENCY", ""),
         "cost_factor": float(os.environ.get("COST_FACTOR", "1.0")),
         "nodes": len(nodes),
+        "agent_version": AGENT_VERSION,
         "gpus": list(pools.values()),
         "gpu_class": gpu_class,
         "operator_detected": operator_detected,
@@ -161,7 +164,7 @@ def _cp_call(path: str, payload: dict | None = None, method: str = "POST"):
 
 
 def report(payload: dict):
-    return _cp_call("/api/agent/report", payload)
+    return _cp_call("/api/agent/v1/report", payload)
 
 
 # ------------------- serving execution (Phase B2) ----------------------
@@ -256,7 +259,7 @@ def _order_state(order: dict) -> str:
 
 
 def process_work(openshift: bool):
-    orders = _cp_call(f"/api/agent/work?cluster_id={os.environ['CLUSTER_ID']}",
+    orders = _cp_call(f"/api/agent/v1/work?cluster_id={os.environ['CLUSTER_ID']}",
                       method="GET")["orders"]
     for order in orders:
         name = f"modelect-{order['id']}"
@@ -267,27 +270,27 @@ def process_work(openshift: bool):
                         ("services", f"/api/v1/namespaces/{NAMESPACE}/services/{name}"),
                         ("routes", f"/apis/route.openshift.io/v1/namespaces/{NAMESPACE}/routes/{name}")]:
                     _kube_write("DELETE", path)
-                _cp_call(f"/api/agent/work/{order['id']}", {"state": "deleted"})
+                _cp_call(f"/api/agent/v1/work/{order['id']}", {"state": "deleted"})
                 print(f"work {order['id']}: deleted {name}", flush=True)
                 continue
             if not order["hf_repo"]:
-                _cp_call(f"/api/agent/work/{order['id']}",
+                _cp_call(f"/api/agent/v1/work/{order['id']}",
                          {"state": "error", "message": "model has no HF repo mapping"})
                 continue
             if order["state"] == "pending":
                 for path, body in _serving_manifests(order, openshift):
                     _kube_write("POST", path, body)
-                _cp_call(f"/api/agent/work/{order['id']}", {"state": "starting"})
+                _cp_call(f"/api/agent/v1/work/{order['id']}", {"state": "starting"})
                 print(f"work {order['id']}: applied {name}", flush=True)
             else:
                 state = _order_state(order)
                 payload = {"state": state}
                 if state == "ready":
                     payload["endpoint"] = _order_endpoint(order, openshift)
-                _cp_call(f"/api/agent/work/{order['id']}", payload)
+                _cp_call(f"/api/agent/v1/work/{order['id']}", payload)
         except Exception as e:
             try:
-                _cp_call(f"/api/agent/work/{order['id']}",
+                _cp_call(f"/api/agent/v1/work/{order['id']}",
                          {"state": "error", "message": str(e)[:280]})
             except Exception:
                 pass
