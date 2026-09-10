@@ -1046,3 +1046,138 @@ def test_per_cluster_enrollment_tokens():
     # minting is an admin action
     u = _user_client("doc-pipeline")
     assert u.post("/api/agents/clusters/lab-tok/token").status_code == 403
+
+
+def test_workforce_roster_and_fte():
+    r = client.get("/api/workforce?days=30").json()
+    ids = {a["id"] for a in r["agents"]}
+    assert {"triage-agent", "scraper-agent", "legacy-importer"} <= ids
+    triage = next(a for a in r["agents"] if a["id"] == "triage-agent")
+    # measured columns
+    assert triage["calls"] > 0 and triage["tokens"] > 0
+    assert 0 < triage["duty_cycle_pct"] <= 100
+    assert triage["tasks_completed"] > 0
+    assert triage["cost_per_outcome"] is not None
+    assert triage["p95_ms"] >= triage["p50_ms"] > 0
+    # the FTE bridge: completed x human minutes x coverage / working month
+    types = {t["id"]: t for t in r["task_types"]}
+    tt = types["ticket-triage"]
+    expected = (triage["tasks_completed"] * tt["human_minutes"]
+                * tt["coverage_pct"] / 100) / (160 * 60)
+    assert abs(triage["fte"]["fte_months"] - expected) < 0.01
+    assert "estimated" in triage["fte"]["basis"]
+    # an agent with no traffic is idle, not active — dead capacity is visible
+    assert next(a for a in r["agents"] if a["id"] == "legacy-importer")["status"] == "idle"
+    # fleet rollup carries the human comparison
+    f = r["fleet"]
+    assert f["fte_months"] > 0 and f["leverage_x"] > 1
+    assert f["human_cost_equivalent"] > f["spend"]
+    # roster is admin-only
+    assert _user_client("support-bot").get("/api/workforce").status_code == 403
+
+
+def test_workforce_agent_detail_and_guardrails():
+    d = client.get("/api/workforce/agents/triage-agent?days=30").json()
+    assert d["agent"]["id"] == "triage-agent"
+    assert len(d["series"]) > 1 and d["missions"]
+    assert client.get("/api/workforce/agents/nope").status_code == 404
+
+    # per-agent guardrails: a tier allowlist binds this identity alone
+    key = d["agent"]["api_key"]
+    client.put("/api/workforce/agents/triage-agent",
+               json={"allowed_tiers": "slm"})
+    hdr = {"Authorization": f"Bearer {key}"}
+    blocked = client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "claude-opus-4.5",
+        "messages": [{"role": "user", "content": "hi"}]})
+    assert blocked.status_code == 403 and "may only use" in blocked.json()["detail"]
+    ok = client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "phi-4", "messages": [{"role": "user", "content": "hi"}]})
+    assert ok.status_code == 200
+    # the block is attributed to the agent, not just its team
+    det = client.get("/api/workforce/agents/triage-agent").json()
+    assert any(e["action"] == "BLOCK" for e in det["enforcement"])
+    client.put("/api/workforce/agents/triage-agent", json={"allowed_tiers": "slm,mid,large"})
+
+    # pausing an agent stops its key without touching the team
+    client.put("/api/workforce/agents/triage-agent", json={"enabled": False})
+    paused = client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "phi-4", "messages": [{"role": "user", "content": "hi"}]})
+    assert paused.status_code == 403 and "paused" in paused.json()["detail"]
+    client.put("/api/workforce/agents/triage-agent", json={"enabled": True})
+
+
+def test_agent_budget_degrades_not_fails():
+    a = client.post("/api/workforce/agents", json={
+        "team_id": "doc-pipeline", "name": "Budget Test Agent",
+        "role": "doc-review", "expected_fte": 0.5, "budget_usd": 0.000001}).json()
+    hdr = {"Authorization": f"Bearer {a['api_key']}"}
+    r = client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "claude-opus-4.5",
+        "messages": [{"role": "user", "content": "expensive please"}]})
+    assert r.status_code == 200          # degraded, never an outage
+    body = r.json()
+    # first call has no prior spend, so it goes through; the second degrades
+    r2 = client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "claude-opus-4.5",
+        "messages": [{"role": "user", "content": "again"}]}).json()
+    ab = r2["modelect"]["receipt"]["agent_budget"]
+    assert ab["policy"] == "agent-budget degrade"
+    assert r2["model"] == ab["served_by"] != "claude-opus-4.5"
+    assert body["model"] == "claude-opus-4.5"
+    # requisition is receipted like any other governance decision
+    led = client.get("/api/ledger?kind=enforcement").json()["entries"]
+    assert any("requisitioned" in e["summary"] for e in led)
+
+
+def test_fte_planner_both_directions():
+    # headcount -> work -> money
+    p = client.post("/api/workforce/plan", json={
+        "task_type": "ticket-triage", "target_fte": 3, "months": 6}).json()
+    assert p["fte_covered"] == 3.0
+    # 12 min x 80% coverage -> 1000 tasks per 160h FTE-month
+    assert p["tasks_per_fte_month"] == 1000
+    assert p["tasks_per_month"] == 3000
+    assert p["recommended"].startswith("router")
+    assert p["human_equivalent"]["monthly_usd"] == 3 * 8000
+    assert p["enforce"]["agent_budget_usd"] > 0
+    assert any("FTE is an estimate" in c for c in p["caveats"])
+
+    # work -> headcount. Coverage cuts both ways and the arithmetic says
+    # so: at half the coverage the SAME task volume is worth half the FTE
+    w = client.post("/api/workforce/plan", json={
+        "task_type": "ticket-triage", "tasks_per_month": 3000,
+        "coverage_pct": 40}).json()
+    assert w["fte_covered"] == 1.5
+    # ...and hitting a fixed FTE target then takes twice the task volume
+    w2 = client.post("/api/workforce/plan", json={
+        "task_type": "ticket-triage", "target_fte": 3,
+        "coverage_pct": 40}).json()
+    assert w2["tasks_per_month"] == 6000
+    assert client.post("/api/workforce/plan",
+                       json={"task_type": "nope", "target_fte": 1}).status_code == 400
+    # baselines are editable and flow straight through the arithmetic
+    client.put("/api/workforce/task-types/ticket-triage",
+               json={"human_minutes": 24, "coverage_pct": 80})
+    p2 = client.post("/api/workforce/plan", json={
+        "task_type": "ticket-triage", "target_fte": 3}).json()
+    assert p2["tasks_per_fte_month"] == 500
+    client.put("/api/workforce/task-types/ticket-triage",
+               json={"human_minutes": 12, "coverage_pct": 80})
+
+
+def test_task_type_classifies_missions_for_fte():
+    teams = {t["id"]: t for t in client.get("/api/tokenomics").json()["teams"]}
+    hdr = {"Authorization": f"Bearer {teams['doc-pipeline']['api_key']}",
+           "X-Task-Id": "typed-mission-1", "X-Task-Type": "code-review"}
+    assert client.post("/v1/chat/completions", headers=hdr, json={
+        "model": "phi-4", "messages": [{"role": "user", "content": "review"}]
+    }).status_code == 200
+    from app.db import engine as _e, tasks_t as _t
+    from sqlalchemy import select as _s
+    with _e.connect() as conn:
+        row = conn.execute(_s(_t).where(_t.c.id == "typed-mission-1")).mappings().first()
+    assert row["task_type"] == "code-review"
+    # per-agent metrics stay label-bounded; the counter still exists
+    body = client.get("/metrics").text
+    assert "modelect_agent_tokens_total" in body

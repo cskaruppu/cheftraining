@@ -51,6 +51,11 @@ interface AdminOps {
   prompt_bloat: { trend: { day: string; avg_tokens_in: number }[]; change_pct: number | null };
   concentration: { provider: string; share_pct: number; providers_used: number; alternatives: number } | null;
   reclaimed?: { gpu_hours: number; sleeps: number; asleep_now: number };
+  workforce?: {
+    fte_months: number; agents_active: number; spend: number;
+    cost_per_fte_month: number | null; human_cost_per_fte_month: number;
+    leverage_x: number | null; tasks_completed: number; basis: string;
+  } | null;
 }
 
 const SEV_DOT: Record<string, string> = {
@@ -205,7 +210,7 @@ export default function Dashboard() {
         </Link>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         <SignatureCard title="Routing savings" to="/tokenomics" chip="measured">
           <div className="text-lg font-semibold text-good">{fmtMoney(routedSaved)}</div>
           <div className="text-[11px] text-muted mt-0.5">
@@ -249,6 +254,22 @@ export default function Dashboard() {
               <span className="block text-good mt-0.5"
                 title="GPU-hours returned to the pool by scale-to-zero — measured from the sleep log">
                 {ops.reclaimed.gpu_hours}h GPU reclaimed · {ops.reclaimed.asleep_now} sleeping
+              </span>
+            )}
+          </div>
+        </SignatureCard>
+        <SignatureCard title="Agent workforce" to="/workforce" chip="estimate">
+          <div className="text-lg font-semibold tabular-nums">
+            {ops?.workforce ? ops.workforce.fte_months.toFixed(2) : "—"}
+            <span className="text-sm text-muted"> FTE-mo</span>
+          </div>
+          <div className="text-[11px] text-muted mt-0.5">
+            {ops?.workforce
+              ? `${ops.workforce.agents_active} active · ${fmtMoney(ops.workforce.cost_per_fte_month ?? 0)} per FTE-month`
+              : "no typed agent missions completed yet"}
+            {ops?.workforce?.leverage_x && (
+              <span className="block text-good mt-0.5" title={ops.workforce.basis}>
+                {ops.workforce.leverage_x.toLocaleString()}x vs {fmtMoney(ops.workforce.human_cost_per_fte_month)} human FTE-month
               </span>
             )}
           </div>

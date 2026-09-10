@@ -114,6 +114,29 @@ def _attention(conn, gov: dict) -> list[dict]:
                           "(auto scale-to-zero) or delete it",
                 "link": "/deploy"})
 
+    # workforce: agent identities that stopped working (an unused ak- key
+    # is an unrevoked credential as well as dead capacity) and agents
+    # eating their own allocation
+    from . import workforce
+    for a in workforce.roster(30)["agents"]:
+        if a["status"] == "idle" and a["calls"] == 0:
+            items.append({
+                "severity": "info", "kind": "workforce",
+                "title": f"agent '{a['name']}' idle — no calls in 30 days",
+                "detail": "dead capacity and a live key: retire it or pause "
+                          "it until the work comes back",
+                "link": "/workforce"})
+        if a["budget_pct"] is not None and a["budget_pct"] >= 80:
+            items.append({
+                "severity": "crit" if a["budget_pct"] >= 100 else "warn",
+                "kind": "workforce",
+                "title": f"agent '{a['name']}' at {a['budget_pct']:.0f}% of "
+                         "its own budget",
+                "detail": f"${a['spend']:.2f} of ${a['budget_usd']:.2f} — past "
+                          "100% it degrades to the smallest capable model "
+                          "rather than failing",
+                "link": "/workforce"})
+
     return sorted(items, key=lambda i: _SEV_RANK[i["severity"]])
 
 
@@ -232,6 +255,25 @@ def _concentration(conn, days: int) -> dict | None:
     }
 
 
+def _workforce_kpi() -> dict | None:
+    """Headline for the Dashboard: how much human-equivalent work the
+    agent fleet delivered in the last 30 days, and what it cost."""
+    from . import workforce
+    fleet = workforce.roster(30)["fleet"]
+    if not fleet.get("fte_months"):
+        return None
+    return {
+        "fte_months": fleet["fte_months"],
+        "agents_active": fleet["active"],
+        "spend": fleet["spend"],
+        "cost_per_fte_month": fleet["cost_per_fte_month"],
+        "human_cost_per_fte_month": fleet["human_cost_per_fte_month"],
+        "leverage_x": fleet["leverage_x"],
+        "tasks_completed": fleet["tasks_completed"],
+        "basis": fleet["basis"],
+    }
+
+
 def admin_summary(days: int = 14) -> dict:
     days = max(1, min(90, int(days)))
     gov = tokenomics.overview()
@@ -249,6 +291,7 @@ def admin_summary(days: int = 14) -> dict:
             "reclaimed": serving.reclaimed(),
             "runway_days": runway,
             "counterfactual": _counterfactual(conn, days),
+            "workforce": _workforce_kpi(),
             "router_health": _router_trend(conn, days),
             "prompt_bloat": _prompt_bloat(conn, days),
             "concentration": _concentration(conn, days),

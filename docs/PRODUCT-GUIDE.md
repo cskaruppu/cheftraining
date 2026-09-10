@@ -88,7 +88,7 @@ Components:
 | **Decide** | Model Catalog, Recommend, Evals, Compare, What-If Replay | Catalog, Recommend, Evals, Compare |
 | **Deploy** | Migrate from Cloud, Deployments | same |
 | **Integrate** | Integrate & Verify, Playground | same |
-| **Govern** | Tokenomics, Decision Ledger, Settings | My Usage |
+| **Govern** | Tokenomics, Agent Workforce, Decision Ledger, Settings | My Usage |
 
 The sticky header shows breadcrumb (group › page), a live-data/demo-data
 provenance chip, the role chip, and session controls. The footer carries the
@@ -333,13 +333,80 @@ speed, so attribution and control go one level deeper than teams:
 - **Loop-breaker** — set a team's `loop_policy` to `degrade` and anomalous
   output volume is auto-contained on the smallest capable model (logged as
   `LOOPBREAK`, receipted) until behavior normalizes.
-- **Delegation-depth guard** — `X-Delegation-Depth` beyond the team's
-  `max_delegation_depth` is refused: the agentic fork-bomb brake.
+- **Delegation-depth guard** — `X-Delegation-Depth` beyond the team's (or the
+  agent's own, when stricter) `max_delegation_depth` is refused: the agentic
+  fork-bomb brake.
+- **Work types** — `X-Task-Type` classifies a mission (`doc-review`,
+  `ticket-triage`, …). It is what turns completed missions into FTE on the
+  **Agent Workforce** page; agents without the header inherit their role.
 - **Router as the agent default** — point any OpenAI-compatible agent
   framework at the gateway with `model:"route"` and every sub-step is
   classified small-vs-strong automatically (snippet on Integrate & Verify).
 
-### 4.13 Decision Ledger (Govern, admin)
+### 4.13 Agent Workforce (Govern, admin)
+
+**What it does:** treats each AI agent as **staffed capacity** rather than an
+API key, and translates what it delivered into the unit projects are still
+planned in — FTE.
+
+**Roster** — one row per agent identity, over 7 / 30 / 90 days:
+
+| Column | Meaning |
+|---|---|
+| tokens (+ per call) | consumption, and the per-call average that exposes prompt bloat |
+| spend / budget | 30-day spend against the agent's *own* allocation |
+| **duty cycle** | share of the window's hours in which the agent made ≥1 call. An agent is never "busy" like a person, so this is duty cycle, not utilization — the same honesty as "allocated ≠ busy" on GPU Fleet |
+| escalation | share of calls served by a non-SLM model — a measured proxy for how hard this agent's work is |
+| tasks | completed of started (missions carrying `X-Task-Id`) |
+| $/outcome | task-attributed spend ÷ completed tasks |
+| FTE | delivered vs requisitioned (see the formula below) |
+| status | active / idle (no calls in 14 days) / paused |
+
+Clicking a row opens the agent: daily token and spend series, model mix,
+recent missions, enforcement history, and its **guardrails**.
+
+**Per-agent guardrails.** Budget, token-rate limit, tier allowlist, delegation
+depth and a kill switch now exist at the agent level as well as the team
+level; the stricter of the two wins. Past 100% of its own budget an agent
+**degrades to the smallest capable model instead of failing** — it keeps
+working, cheaply — and the receipt carries an `agent_budget` block.
+
+**The FTE bridge.** Two customer-owned inputs per work type make the
+translation possible, and they are editable under *Effort baselines*:
+
+- `human_minutes` — how long one such task takes a person
+- `coverage_pct` — how much of it the agent genuinely does end-to-end
+  (draft-then-human-review is not 100%)
+
+```
+FTE-months delivered = Σ(completed × human_minutes × coverage) / (fte_hours_per_month × 60)
+cost per FTE-month   = agent spend ÷ FTE-months
+leverage             = your loaded human cost per FTE-month ÷ cost per FTE-month
+```
+
+Agents declare a work type with the **`X-Task-Type`** header, or inherit one
+from their assigned role. Completed tasks with no type are excluded from FTE
+and the count is shown, never silently folded in.
+
+**FTE planner** — the same bridge, run backwards, for sizing a project:
+
+- Give it *headcount* ("3 FTE of ticket triage") or *work*
+  ("12,000 reviews a month") — it returns the other.
+- Prices it from **this install's own token shapes** for that work type
+  (measured at ≥5 completed tasks, otherwise a labeled estimate), under the
+  current mix, the router, the smallest capable model, and always-strong.
+- Plans on the **router**, not the cheapest line: committing a project to the
+  smallest model is a quality claim, and quality is never simulated here.
+- Returns the **human equivalent** at your configured loaded cost, and the
+  **budgets that make the plan enforceable** — an agent monthly budget (20%
+  headroom) and a per-mission `X-Task-Budget` (50% headroom).
+
+**Requisition.** `POST /api/workforce/agents` mints an identity that arrives
+with its role, expected FTE and limits already attached — the way a person
+arrives with a job description and a cost centre — and the approval is
+receipted in the Decision Ledger.
+
+### 4.14 Decision Ledger (Govern, admin)
 
 **What it does:** the governance record — an append-only ledger of **every
 model decision with its receipt**: kind (`routing` / `enforcement` /
@@ -349,7 +416,7 @@ auditors. This is the record-keeping AI-governance frameworks (e.g. EU AI Act
 traceability) ask for. *Prompt contents are never stored — only decisions
 about them.*
 
-### 4.14 Settings (Govern, admin)
+### 4.15 Settings (Govern, admin)
 
 **What it does:** runtime configuration — no redeploy needed.
 
@@ -368,7 +435,7 @@ about them.*
 - **Data sources:** registry connector status (live vs snapshot) + manual
   sync.
 
-### 4.15 My Usage (Govern, team user)
+### 4.16 My Usage (Govern, team user)
 
 **What it does:** the team user's own slice — their team's API key, spend vs
 budget, guardrails that apply to them, and recent usage. No visibility into
@@ -465,6 +532,11 @@ Installed from a single manifest (GPU Fleet → Connect). Outbound-only.
 | Anomaly | team output tokens vs own baseline (≈6× burst flags) |
 | Carbon (cluster) | `used_GPUs × 0.4 kW × 24 h × 0.35 kg CO₂e/kWh` (labeled estimate) |
 | Measured latency | ≥ 20 samples → telemetry overrides catalog estimate everywhere |
+| FTE delivered | `Σ(completed × human_minutes × coverage) / (fte_hours_per_month × 60)` |
+| Tasks per FTE-month | `(fte_hours_per_month × 60) / (human_minutes × coverage)` |
+| Cost per FTE-month | `agent spend ÷ FTE-months delivered` |
+| Agent leverage | `loaded human cost per FTE-month ÷ cost per FTE-month` |
+| Agent duty cycle | `distinct hours with ≥1 call / (days × 24)` — not "busy", by design |
 
 ---
 
@@ -508,6 +580,10 @@ an automatic `rollout restart` on redeploys. Alternatives: Helm chart
 | `GET/POST /api/deployments`, `POST /api/placement` | deploy |
 | `POST /api/integration-test`, `/api/playground`, `/api/router/preview` | integrate |
 | `GET /api/tokenomics`, `PUT /api/teams/{id}` | govern |
+| `GET /api/workforce`, `/api/workforce/agents/{id}` | agent roster, per-agent detail |
+| `POST /api/workforce/agents`, `PUT /api/workforce/agents/{id}` | requisition, guardrails |
+| `GET/PUT /api/workforce/task-types/{id}` | human-effort baselines |
+| `POST /api/workforce/plan` | FTE ⇄ work ⇄ budget capacity planning |
 | `GET /api/ledger` (+`/export`) | decision ledger |
 | `GET /api/analytics/summary?days=`, `/api/router/summary`, `/api/dashboard/admin` | dashboards |
 | `GET /api/clusters`, `PUT /api/clusters/{id}/cordon`, `GET /api/agents/token`, `POST /api/agents/clusters/{id}/token`, `POST /api/agent/v1/report` | fleet |

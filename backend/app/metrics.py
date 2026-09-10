@@ -24,7 +24,27 @@ _HELP = {
     "modelect_gateway_cost_usd_total": "Estimated USD cost metered through the gateway",
     "modelect_enforcement_total": "Guardrail enforcement actions by action type",
     "modelect_gateway_request_seconds": "Gateway request latency",
+    "modelect_agent_tokens_total": "Tokens by AI agent identity (top talkers)",
+    "modelect_agent_cost_usd_total": "Estimated USD cost by AI agent identity",
 }
+
+# Agent ids are user-defined and unbounded — a label per agent is a
+# cardinality bomb in Prometheus. Track the first N seen; everything
+# after that folds into agent="other", which is still correct in a sum().
+_AGENT_LABEL_CAP = 25
+_agent_labels: set[str] = set()
+
+
+def agent_label(agent_id: str | None) -> str | None:
+    if not agent_id:
+        return None
+    with _lock:
+        if agent_id in _agent_labels:
+            return agent_id
+        if len(_agent_labels) < _AGENT_LABEL_CAP:
+            _agent_labels.add(agent_id)
+            return agent_id
+    return "other"
 
 
 def inc(name: str, labels: dict | None = None, value: float = 1.0) -> None:

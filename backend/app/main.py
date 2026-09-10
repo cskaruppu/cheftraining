@@ -25,7 +25,7 @@ import httpx
 
 from . import (agentic, agents, analytics, auth, clusters, config, deployments,
                evals, insights, integration, ledger, migrate, registry, replay,
-               resilience, serving, tokenomics, work)
+               resilience, serving, tokenomics, work, workforce)
 from . import router as smart_router
 from .db import DATA_DIR, backend_name
 from .catalog import MODELS, MODELS_BY_ID, USE_CASES, QUALITY_DIMS
@@ -268,6 +268,11 @@ def _simulate_completion(model: dict, prompt: str,
     metrics.inc("modelect_gateway_tokens_total", {"direction": "in"}, tokens_in)
     metrics.inc("modelect_gateway_tokens_total", {"direction": "out"}, tokens_out)
     metrics.inc("modelect_gateway_cost_usd_total", value=cost)
+    label = metrics.agent_label(agent_id)
+    if label:
+        metrics.inc("modelect_agent_tokens_total", {"agent": label},
+                    tokens_in + tokens_out)
+        metrics.inc("modelect_agent_cost_usd_total", {"agent": label}, cost)
     return {
         "model_id": model["id"], "model_name": model["name"], "provider": model["provider"],
         "text": text, "tokens_in": tokens_in, "tokens_out": tokens_out,
@@ -719,6 +724,122 @@ def create_team_agent(team_id: str, req: AgentCreateRequest):
         raise HTTPException(409, str(e))
 
 
+# --------------------------- workforce --------------------------------
+# Agents as staffed capacity: what each one did, and what that work is
+# worth in the unit projects are still planned in (FTE).
+
+@app.get("/api/workforce")
+def workforce_roster(days: int = 30):
+    return workforce.roster(max(1, min(90, days)))
+
+
+@app.get("/api/workforce/agents/{agent_id}")
+def workforce_agent(agent_id: str, days: int = 30):
+    try:
+        return workforce.agent_detail(agent_id, max(1, min(90, days)))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+class AgentRequisition(BaseModel):
+    """Hiring an agent, not just minting a key: role, expected capacity
+    and the limits it lives inside, approved in one step."""
+    team_id: str
+    name: str
+    role: str | None = None
+    expected_fte: float | None = None
+    budget_usd: float | None = None
+    rate_limit_tpm: int | None = None
+    allowed_tiers: str | None = None
+    max_delegation_depth: int | None = None
+
+
+@app.post("/api/workforce/agents")
+def requisition_agent(req: AgentRequisition):
+    if not tokenomics.team_by_id(req.team_id):
+        raise HTTPException(404, "unknown team")
+    if req.role and req.role not in workforce.task_types_by_id():
+        raise HTTPException(400, f"unknown task type '{req.role}'")
+    try:
+        agent = agentic.create_agent(
+            req.team_id, req.name, role=req.role, expected_fte=req.expected_fte,
+            budget_usd=req.budget_usd, rate_limit_tpm=req.rate_limit_tpm,
+            allowed_tiers=req.allowed_tiers,
+            max_delegation_depth=req.max_delegation_depth)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    ledger.record("enforcement", "-", team_id=req.team_id,
+                  summary=f"agent '{agent['id']}' requisitioned for team "
+                          f"'{req.team_id}'"
+                          + (f" — {req.expected_fte} FTE of {req.role}"
+                             if req.expected_fte and req.role else ""),
+                  receipt={"agent_id": agent["id"], "role": req.role,
+                           "expected_fte": req.expected_fte,
+                           "budget_usd": req.budget_usd,
+                           "allowed_tiers": req.allowed_tiers,
+                           "rate_limit_tpm": req.rate_limit_tpm})
+    return agent
+
+
+class AgentPatch(BaseModel):
+    name: str | None = None
+    role: str | None = None
+    expected_fte: float | None = None
+    budget_usd: float | None = None
+    rate_limit_tpm: int | None = None
+    allowed_tiers: str | None = None
+    max_delegation_depth: int | None = None
+    enabled: bool | None = None
+
+
+@app.put("/api/workforce/agents/{agent_id}")
+def update_workforce_agent(agent_id: str, req: AgentPatch):
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        return agentic.update_agent(agent_id, patch)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/workforce/task-types")
+def list_task_types():
+    return {"task_types": workforce.task_types(),
+            "fte_hours_per_month": config.get("fte_hours_per_month"),
+            "human_loaded_cost_month": config.get("human_loaded_cost_month")}
+
+
+class TaskTypePatch(BaseModel):
+    name: str | None = None
+    team_id: str | None = None
+    human_minutes: float | None = None
+    coverage_pct: float | None = None
+
+
+@app.put("/api/workforce/task-types/{tt_id}")
+def put_task_type(tt_id: str, req: TaskTypePatch):
+    return workforce.upsert_task_type(tt_id, req.model_dump(exclude_none=True))
+
+
+class FtePlanRequest(BaseModel):
+    task_type: str
+    tasks_per_month: float | None = None
+    target_fte: float | None = None
+    months: int = 6
+    coverage_pct: float | None = None
+
+
+@app.post("/api/workforce/plan")
+def workforce_plan(req: FtePlanRequest):
+    """Capacity planning both ways: work -> agent headcount -> budget,
+    or headcount -> work -> budget, priced from this install's traffic."""
+    try:
+        return workforce.plan(req.task_type, req.tasks_per_month,
+                              req.target_fte, max(1, min(60, req.months)),
+                              req.coverage_pct)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 class RouterPreviewRequest(BaseModel):
     messages: list[ChatMessage]
 
@@ -800,6 +921,7 @@ async def chat_completions(req: ChatCompletionRequest,
                            authorization: str | None = Header(default=None),
                            x_task_id: str | None = Header(default=None),
                            x_task_budget: float | None = Header(default=None),
+                           x_task_type: str | None = Header(default=None),
                            x_delegation_depth: int | None = Header(default=None)):
     """Unified API: `model: "auto"` routes via the recommender,
     `model: "cascade"` applies SLM-first routing with escalation, and
@@ -808,8 +930,9 @@ async def chat_completions(req: ChatCompletionRequest,
     A team key (tk-…) or agent key (ak-…) in the Authorization header
     attributes the spend and activates that caller's guardrails.
     Agentic headers: X-Task-Id (+ optional X-Task-Budget in USD) meter a
-    mission budget across all of a task's calls; X-Delegation-Depth is
-    checked against the team's maximum."""
+    mission budget across all of a task's calls; X-Task-Type classifies
+    the mission so completed work converts to FTE; X-Delegation-Depth is
+    checked against the team's (or the agent's) maximum."""
     prompt = req.messages[-1].content if req.messages else ""
     cascade_info = None
     router_info = None
@@ -846,22 +969,41 @@ async def chat_completions(req: ChatCompletionRequest,
     enforcement = None
     task_info = None
     loop_info = None
+    agent_budget_info = None
+
+    agent_id_for_log = agent["id"] if agent else None
+
+    if agent:
+        # per-agent guardrails — the team limits still apply on top, but
+        # one runaway identity can no longer drain its team's month
+        est_input = max(8, len(prompt.split()) * 4 // 3)
+        av = agentic.agent_precheck(agent, model, est_input)
+        if av:
+            tokenomics.log_enforcement(agent["team_id"], "BLOCK", av["reason"],
+                                       agent_id=agent["id"])
+            raise HTTPException(av["code"], av["reason"])
 
     if team:
-        # delegation-depth guard: the agentic fork-bomb brake
-        max_depth = team.get("max_delegation_depth")
+        # delegation-depth guard: the agentic fork-bomb brake. The agent's
+        # own maximum wins when it is stricter than the team's.
+        depths = [d for d in (team.get("max_delegation_depth"),
+                              agent.get("max_delegation_depth") if agent else None)
+                  if d]
+        max_depth = min(depths) if depths else None
         if max_depth and x_delegation_depth and x_delegation_depth > max_depth:
             tokenomics.log_enforcement(
                 team["id"], "BLOCK",
-                f"delegation depth {x_delegation_depth} exceeds team max {max_depth}")
+                f"delegation depth {x_delegation_depth} exceeds max {max_depth}",
+                agent_id=agent_id_for_log)
             raise HTTPException(
-                403, f"delegation depth {x_delegation_depth} exceeds the team "
+                403, f"delegation depth {x_delegation_depth} exceeds the "
                      f"maximum of {max_depth} — recursive agent spawning stopped")
 
         # mission budget: meter this task across all of its calls
         if x_task_id:
             task = agentic.get_or_create_task(
-                x_task_id, team["id"], agent["id"] if agent else None, x_task_budget)
+                x_task_id, team["id"], agent["id"] if agent else None, x_task_budget,
+                task_type=(x_task_type or (agent.get("role") if agent else None)))
             verdict = agentic.task_precheck(task)
             task_info = {"id": task["id"], "budget_usd": task["budget_usd"],
                          "spend_before_usd": round(agentic.task_spend(task["id"]), 4)}
@@ -879,6 +1021,26 @@ async def chat_completions(req: ChatCompletionRequest,
                     team["id"], "DEGRADE",
                     f"task '{task['id']}' over budget — {model['id']} served "
                     f"by {small['id']}")
+                model = small
+
+        # agent budget: degrade before the team even notices — the agent
+        # keeps working, cheaply, inside its own allocation
+        if agent and agent.get("budget_usd") and model["size_class"] != "slm":
+            ab = agentic.agent_budget_status(agent)
+            if ab["pct"] >= 100:
+                small = smart_router.small_model()
+                agent_budget_info = {
+                    "policy": "agent-budget degrade",
+                    "agent": agent["id"], "budget_usd": ab["budget"],
+                    "spend_usd": ab["spend"], "pct": ab["pct"],
+                    "requested_model": model["id"], "served_by": small["id"],
+                    "note": "agent reached its own 30-day allocation — served "
+                            "by the smallest capable model, no outage"}
+                tokenomics.log_enforcement(
+                    team["id"], "DEGRADE",
+                    f"agent '{agent['id']}' at {ab['pct']:.0f}% of its budget — "
+                    f"{model['id']} served by {small['id']}",
+                    agent_id=agent["id"])
                 model = small
 
         # loop-breaker: contain an anomalous team automatically
@@ -979,6 +1141,8 @@ async def chat_completions(req: ChatCompletionRequest,
                        if agent else {}),
                     **({"task": task_info} if task_info else {}),
                     **({"loopbreak": loop_info} if loop_info else {}),
+                    **({"agent_budget": agent_budget_info}
+                       if agent_budget_info else {}),
                 },
             }
             _ledger_gateway(model, req.model if is_routed else "direct",
@@ -1023,6 +1187,8 @@ async def chat_completions(req: ChatCompletionRequest,
                       if agent else {}),
                    **({"task": task_info} if task_info else {}),
                    **({"loopbreak": loop_info} if loop_info else {}),
+                   **({"agent_budget": agent_budget_info}
+                      if agent_budget_info else {}),
                    **({"wake": wake_info} if wake_info else {})}
     _ledger_gateway(model, req.model if is_routed else "direct",
                     team, enforcement, failover_info, router_info,

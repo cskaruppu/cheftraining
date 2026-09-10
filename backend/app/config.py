@@ -36,6 +36,18 @@ DEFAULTS = [
                     "vGPU allocation returns to the pool (GPU thin "
                     "provisioning). First request wakes them.",
      "min_value": 5, "max_value": 1440},
+    {"key": "fte_hours_per_month", "value": 160,
+     "label": "Working hours per FTE-month",
+     "description": "One full-time-equivalent month of human effort, used to "
+                    "translate completed agent tasks into FTE. 160 = 8h x 20 "
+                    "working days.",
+     "min_value": 80, "max_value": 240},
+    {"key": "human_loaded_cost_month", "value": 8000,
+     "label": "Loaded cost per human FTE-month ($)",
+     "description": "Fully-loaded monthly cost of one human FTE for this "
+                    "organisation — the comparison baseline for agent "
+                    "cost-per-FTE-month. Your finance number, not ours.",
+     "min_value": 500, "max_value": 100000},
     {"key": "router_threshold", "value": 0.5,
      "label": "Smart-router complexity threshold",
      "description": "Requests scoring at or above this complexity go to the "

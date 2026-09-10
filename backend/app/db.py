@@ -100,6 +100,28 @@ ai_agents_t = Table(
     Column("name", String(120)),
     Column("api_key", String(80), index=True),
     Column("created_at", Float),
+    # workforce layer: an agent is a staffed role with its own budget
+    # and limits, not just an attribution label
+    Column("role", String(60), nullable=True),        # task_types.id
+    Column("expected_fte", Float, nullable=True),     # requisitioned capacity
+    Column("budget_usd", Float, nullable=True),       # rolling 30-day
+    Column("rate_limit_tpm", Integer, nullable=True),
+    Column("allowed_tiers", String(40), nullable=True),
+    Column("max_delegation_depth", Integer, nullable=True),
+    Column("enabled", Boolean, default=True),         # per-agent kill switch
+)
+
+# Human-effort baselines: how long one unit of this work takes a person,
+# and how much of it an agent can actually cover. Customer-owned inputs —
+# the FTE translation is only as honest as these numbers.
+task_types_t = Table(
+    "task_types", metadata,
+    Column("id", String(60), primary_key=True),
+    Column("name", String(120)),
+    Column("team_id", String(40), nullable=True),   # None = applies fleet-wide
+    Column("human_minutes", Float),                 # minutes per task, a person
+    Column("coverage_pct", Float),                  # share an agent really does
+    Column("created_at", Float),
 )
 
 # Mission budgets: a task is a bounded unit of agent work ("this research
@@ -113,6 +135,7 @@ tasks_t = Table(
     Column("created_at", Float),
     Column("completed", Boolean, default=False),
     Column("completed_at", Float, nullable=True),
+    Column("task_type", String(60), nullable=True),   # -> task_types.id
 )
 
 agents_t = Table(
@@ -198,6 +221,7 @@ enforcement_t = Table(
     Column("team_id", String(40)),
     Column("action", String(20)),       # BUDGET | DEGRADE | ANOMALY
     Column("detail", String(400)),
+    Column("agent_id", String(60), nullable=True, index=True),
 )
 
 config_t = Table(
@@ -276,6 +300,34 @@ for _name, _ddl in _AGENT_MIGRATIONS.items():
     if _name not in _agent_cols:
         with engine.begin() as _conn:
             _conn.execute(_sa_text(_ddl))
+
+_ai_cols = {c["name"] for c in _sa_inspect(engine).get_columns("ai_agents")}
+_AI_MIGRATIONS = {
+    "role": "ALTER TABLE ai_agents ADD COLUMN role VARCHAR(60)",
+    "expected_fte": "ALTER TABLE ai_agents ADD COLUMN expected_fte FLOAT",
+    "budget_usd": "ALTER TABLE ai_agents ADD COLUMN budget_usd FLOAT",
+    "rate_limit_tpm": "ALTER TABLE ai_agents ADD COLUMN rate_limit_tpm INTEGER",
+    "allowed_tiers": "ALTER TABLE ai_agents ADD COLUMN allowed_tiers VARCHAR(40)",
+    "max_delegation_depth":
+        "ALTER TABLE ai_agents ADD COLUMN max_delegation_depth INTEGER",
+    "enabled": "ALTER TABLE ai_agents ADD COLUMN enabled BOOLEAN DEFAULT 1",
+}
+for _name, _ddl in _AI_MIGRATIONS.items():
+    if _name not in _ai_cols:
+        with engine.begin() as _conn:
+            _conn.execute(_sa_text(_ddl))
+
+_task_cols = {c["name"] for c in _sa_inspect(engine).get_columns("agent_tasks")}
+if "task_type" not in _task_cols:
+    with engine.begin() as _conn:
+        _conn.execute(_sa_text(
+            "ALTER TABLE agent_tasks ADD COLUMN task_type VARCHAR(60)"))
+
+_enf_cols = {c["name"] for c in _sa_inspect(engine).get_columns("enforcement_log")}
+if "agent_id" not in _enf_cols:
+    with engine.begin() as _conn:
+        _conn.execute(_sa_text(
+            "ALTER TABLE enforcement_log ADD COLUMN agent_id VARCHAR(60)"))
 
 
 def backend_name() -> str:

@@ -129,6 +129,9 @@ ADMIN_RULES = [
     ("POST", "/api/deployments/"),   # sleep/wake lifecycle (create is
                                      # /api/deployments without the slash)
     ("POST", "/api/agents/"),        # enrollment-token minting/rotation
+    ("GET", "/api/workforce"),       # agent roster, FTE, planner —
+    ("POST", "/api/workforce"),      # workforce management is an admin
+    ("PUT", "/api/workforce"),       # surface, like Tokenomics
 ]
 
 

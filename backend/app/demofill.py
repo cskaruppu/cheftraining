@@ -45,17 +45,37 @@ def _ensure_agents():
     agent creation). Idempotent, runs on every demo-mode boot."""
     from .db import ai_agents_t
     import secrets
+    from sqlalchemy import update as _update
     with engine.begin() as conn:
         have = {r.id for r in conn.execute(select(ai_agents_t.c.id))}
-        for aid, team, name in (
-                ("planner-agent", "research-agents", "Planner Agent"),
-                ("scraper-agent", "research-agents", "Scraper Agent"),
-                ("triage-agent", "support-bot", "Triage Agent")):
+        # each demo agent is a staffed role: task type, requisitioned FTE
+        # and its own allocation, so the workforce view has a story
+        for aid, team, name, role, fte, budget in (
+                # (id, team, name, role, requisitioned FTE, monthly $)
+                # budgets look small because the work runs on a
+                # self-hosted SLM — that IS the economics being shown
+                ("planner-agent", "research-agents", "Planner Agent",
+                 "research-brief", 0.40, 0.02),
+                ("scraper-agent", "research-agents", "Scraper Agent",
+                 "doc-review", 0.30, 1.20),
+                ("triage-agent", "support-bot", "Triage Agent",
+                 "ticket-triage", 0.25, 0.05),
+                ("codereview-agent", "doc-pipeline", "Code Review Agent",
+                 "code-review", 0.10, 0.02),
+                ("legacy-importer", "intern-sandbox", "Legacy Importer",
+                 "doc-review", 0.10, 0.50)):
             if aid not in have:
                 conn.execute(insert(ai_agents_t).values(
                     id=aid, team_id=team, name=name,
                     api_key=f"ak-{secrets.token_hex(12)}",
-                    created_at=time.time()))
+                    created_at=time.time(), role=role, expected_fte=fte,
+                    budget_usd=budget, enabled=True))
+            else:  # upgrade path: fill the workforce fields once
+                conn.execute(_update(ai_agents_t)
+                             .where(ai_agents_t.c.id == aid,
+                                    ai_agents_t.c.role.is_(None))
+                             .values(role=role, expected_fte=fte,
+                                     budget_usd=budget, enabled=True))
 
 
 def seed():
@@ -99,22 +119,33 @@ def seed():
 
     # ---- 2. agent missions: tasks with budgets, mostly completed ----
     tasks = []
-    for i in range(24):
-        agent_id, team_id, prefix = rng.choice([
-            ("triage-agent", "support-bot", "ticket"),
-            ("planner-agent", "research-agents", "research"),
-            ("scraper-agent", "research-agents", "crawl")])
-        created = now - timedelta(days=rng.randint(0, 9),
-                                  hours=rng.randint(0, 20))
+    # missions across the full 30-day workforce window, each typed so
+    # completed work converts to FTE. Ratios differ per role: triage is
+    # high-volume/short, research is low-volume/long.
+    for i in range(600):
+        # duplicated entries weight the mix: triage is high-volume and
+        # short, research low-volume and long — as the roles really are
+        agent_id, team_id, prefix, ttype = rng.choice([
+            ("triage-agent", "support-bot", "ticket", "ticket-triage"),
+            ("triage-agent", "support-bot", "ticket", "ticket-triage"),
+            ("triage-agent", "support-bot", "ticket", "ticket-triage"),
+            ("scraper-agent", "research-agents", "crawl", "doc-review"),
+            ("scraper-agent", "research-agents", "crawl", "doc-review"),
+            ("codereview-agent", "doc-pipeline", "review", "code-review"),
+            ("planner-agent", "research-agents", "research", "research-brief")])
+        created = now - timedelta(days=rng.randint(0, 29),
+                                  hours=rng.randint(0, 23),
+                                  minutes=rng.randint(0, 59))
         task_id = f"{prefix}-{1000 + i}"
-        completed = rng.random() < 0.8
+        completed = rng.random() < 0.85
         tasks.append({"id": task_id, "team_id": team_id, "agent_id": agent_id,
                       "budget_usd": rng.choice([0.10, 0.25, 0.50]),
                       "created_at": created.timestamp(),
                       "completed": completed,
                       "completed_at": created.timestamp() + rng.randint(120, 1800)
-                      if completed else None})
-        for _ in range(rng.randint(3, 9)):             # the mission's calls
+                      if completed else None,
+                      "task_type": ttype})
+        for _ in range(rng.randint(2, 5)):             # the mission's calls
             ts = created + timedelta(seconds=rng.randint(10, 1500))
             events.append(_event(ts, "phi-4", rng.randint(40, 300),
                                  rng.randint(60, 240), rng.randint(90, 240),

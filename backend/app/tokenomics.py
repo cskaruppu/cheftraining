@@ -224,12 +224,14 @@ def update_team(team_id: str, fields: dict) -> dict:
     return merged
 
 
-def log_enforcement(team_id: str, action: str, detail: str):
+def log_enforcement(team_id: str, action: str, detail: str,
+                    agent_id: str | None = None):
     from . import metrics
     metrics.inc("modelect_enforcement_total", {"action": action})
     with engine.begin() as conn:
         conn.execute(insert(enforcement_t).values(
-            ts=_now().isoformat(), team_id=team_id, action=action, detail=detail))
+            ts=_now().isoformat(), team_id=team_id, action=action,
+            detail=detail, agent_id=agent_id))
 
 
 def anomalies() -> list[dict]:

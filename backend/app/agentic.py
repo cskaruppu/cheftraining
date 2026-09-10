@@ -22,6 +22,7 @@ team tokenomics:
 """
 import secrets
 import time
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Integer, func, insert, select, update
 
@@ -32,10 +33,22 @@ TASK_HARD_STOP = 1.5  # x budget: degrade at 1.0, refuse beyond this
 
 # ---------------- agent identities -----------------------------------
 
-def create_agent(team_id: str, name: str) -> dict:
+def create_agent(team_id: str, name: str, role: str | None = None,
+                 expected_fte: float | None = None,
+                 budget_usd: float | None = None,
+                 rate_limit_tpm: int | None = None,
+                 allowed_tiers: str | None = None,
+                 max_delegation_depth: int | None = None) -> dict:
+    """Requisition an agent: an identity that arrives with its role and
+    its limits already attached, the way a person arrives with a job
+    description and a cost centre."""
     agent_id = name.lower().replace(" ", "-")[:60]
     row = {"id": agent_id, "team_id": team_id, "name": name,
-           "api_key": f"ak-{secrets.token_hex(12)}", "created_at": time.time()}
+           "api_key": f"ak-{secrets.token_hex(12)}", "created_at": time.time(),
+           "role": role, "expected_fte": expected_fte,
+           "budget_usd": budget_usd, "rate_limit_tpm": rate_limit_tpm,
+           "allowed_tiers": allowed_tiers,
+           "max_delegation_depth": max_delegation_depth, "enabled": True}
     with engine.begin() as conn:
         exists = conn.execute(select(ai_agents_t.c.id)
                               .where(ai_agents_t.c.id == agent_id)).first()
@@ -43,6 +56,82 @@ def create_agent(team_id: str, name: str) -> dict:
             raise ValueError(f"agent '{agent_id}' already exists")
         conn.execute(insert(ai_agents_t).values(**row))
     return row
+
+
+_AGENT_EDITABLE = {"name", "role", "expected_fte", "budget_usd",
+                   "rate_limit_tpm", "allowed_tiers", "max_delegation_depth",
+                   "enabled"}
+
+
+def agent_by_id(agent_id: str) -> dict | None:
+    with engine.connect() as conn:
+        row = conn.execute(select(ai_agents_t)
+                           .where(ai_agents_t.c.id == agent_id)).mappings().first()
+    return dict(row) if row else None
+
+
+def update_agent(agent_id: str, patch: dict) -> dict:
+    values = {k: v for k, v in patch.items() if k in _AGENT_EDITABLE}
+    if not agent_by_id(agent_id):
+        raise ValueError(f"unknown agent '{agent_id}'")
+    if values:
+        with engine.begin() as conn:
+            conn.execute(update(ai_agents_t)
+                         .where(ai_agents_t.c.id == agent_id).values(**values))
+    return agent_by_id(agent_id)
+
+
+# ---------------- per-agent guardrails --------------------------------
+# The team limits still apply; these bind one agent so a single runaway
+# identity cannot spend its whole team's month.
+
+def agent_spend(agent_id: str, days: int = 30) -> float:
+    lo = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with engine.connect() as conn:
+        return conn.execute(
+            select(func.sum(events_t.c.cost))
+            .where(events_t.c.agent_id == agent_id, events_t.c.ts >= lo)).scalar() or 0.0
+
+
+def agent_budget_status(agent: dict) -> dict:
+    budget = agent.get("budget_usd")
+    spend = agent_spend(agent["id"])
+    return {"spend": round(spend, 4), "budget": budget,
+            "pct": round(spend / budget * 100, 1) if budget else 0.0}
+
+
+def agent_tokens_last_minute(agent_id: str) -> int:
+    lo = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    with engine.connect() as conn:
+        return int(conn.execute(
+            select(func.sum(events_t.c.tokens_in + events_t.c.tokens_out))
+            .where(events_t.c.agent_id == agent_id,
+                   events_t.c.ts >= lo)).scalar() or 0)
+
+
+def agent_precheck(agent: dict, model: dict, est_input: int) -> dict | None:
+    """Kill switch, tier allowlist and token-rate limit, per agent.
+    Returns None or {"code": http_status, "reason": ...}."""
+    if agent.get("enabled") is False:
+        return {"code": 403,
+                "reason": f"agent '{agent['name']}' is paused — its key is "
+                          "disabled by an administrator"}
+    tiers = (agent.get("allowed_tiers") or "").strip()
+    if tiers:
+        allowed = {t.strip() for t in tiers.split(",") if t.strip()}
+        if model["size_class"] not in allowed:
+            return {"code": 403,
+                    "reason": f"agent '{agent['name']}' may only use "
+                              f"{sorted(allowed)} models — '{model['id']}' is "
+                              f"{model['size_class']}"}
+    tpm = agent.get("rate_limit_tpm")
+    if tpm:
+        used = agent_tokens_last_minute(agent["id"])
+        if used + est_input > tpm:
+            return {"code": 429,
+                    "reason": f"agent '{agent['name']}' rate limit: {used:,} of "
+                              f"{tpm:,} tokens/minute already used"}
+    return None
 
 
 def resolve_agent(bearer_key: str | None) -> dict | None:
@@ -65,7 +154,8 @@ def agents_for(team_id: str | None = None) -> list[dict]:
 # ---------------- mission budgets ------------------------------------
 
 def get_or_create_task(task_id: str, team_id: str,
-                       agent_id: str | None, budget_usd: float | None) -> dict:
+                       agent_id: str | None, budget_usd: float | None,
+                       task_type: str | None = None) -> dict:
     with engine.begin() as conn:
         row = conn.execute(select(tasks_t)
                            .where(tasks_t.c.id == task_id)).mappings().first()
@@ -77,10 +167,16 @@ def get_or_create_task(task_id: str, team_id: str,
                 conn.execute(update(tasks_t).where(tasks_t.c.id == task_id)
                              .values(budget_usd=budget_usd))
                 task["budget_usd"] = budget_usd
+            # a type declared on a later call classifies the whole task
+            if task_type and not task.get("task_type"):
+                conn.execute(update(tasks_t).where(tasks_t.c.id == task_id)
+                             .values(task_type=task_type))
+                task["task_type"] = task_type
             return task
         task = {"id": task_id[:80], "team_id": team_id, "agent_id": agent_id,
                 "budget_usd": budget_usd, "created_at": time.time(),
-                "completed": False, "completed_at": None}
+                "completed": False, "completed_at": None,
+                "task_type": task_type}
         conn.execute(insert(tasks_t).values(**task))
         return task
 

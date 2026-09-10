@@ -14,6 +14,7 @@ import Settings from "./pages/Settings";
 import Ledger from "./pages/Ledger";
 import WhatIf from "./pages/WhatIf";
 import Tokenomics from "./pages/Tokenomics";
+import Workforce from "./pages/Workforce";
 import Login from "./pages/Login";
 import MyUsage from "./pages/MyUsage";
 
@@ -175,6 +176,7 @@ const ADMIN_GROUPS: NavGroup[] = [
     label: "Govern",
     items: [
       { to: "/tokenomics", label: "Tokenomics", icon: "tokenomics" },
+      { to: "/workforce", label: "Agent Workforce", icon: "usage" },
       { to: "/ledger", label: "Decision Ledger", icon: "ledger" },
       { to: "/settings", label: "Settings", icon: "settings" },
     ],
@@ -423,6 +425,7 @@ export default function App() {
           <Route path="/tokenomics" element={<AdminOnly><Tokenomics /></AdminOnly>} />
           <Route path="/settings" element={<AdminOnly><Settings /></AdminOnly>} />
           <Route path="/ledger" element={<AdminOnly><Ledger /></AdminOnly>} />
+          <Route path="/workforce" element={<AdminOnly><Workforce /></AdminOnly>} />
           <Route path="/whatif" element={<AdminOnly><WhatIf /></AdminOnly>} />
         </Routes>
         </div>
